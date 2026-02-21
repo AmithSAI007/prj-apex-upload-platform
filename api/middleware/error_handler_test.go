@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/AmithSAI007/prj-apex-upload-platform/internal/api/dto"
+	"github.com/AmithSAI007/prj-apex-upload-platform/api/dto"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )

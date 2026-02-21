@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AmithSAI007/prj-apex-upload-platform/api/dto"
 	"github.com/AmithSAI007/prj-apex-upload-platform/api/middleware"
-	"github.com/AmithSAI007/prj-apex-upload-platform/internal/api/dto"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/config"
 	internalerrors "github.com/AmithSAI007/prj-apex-upload-platform/internal/errors"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/model"
