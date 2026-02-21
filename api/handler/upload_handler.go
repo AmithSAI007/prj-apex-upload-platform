@@ -112,7 +112,7 @@ func (h *UploadHandler) Create(ctx *gin.Context) {
 // @Failure 400 {object} dto.ErrorResponse
 // @Failure 401 {object} dto.ErrorResponse
 // @Failure 403 {object} dto.ErrorResponse
-// @Failure 501 {object} dto.ErrorResponse
+// @Failure 410 {object} dto.ErrorResponse
 // @Failure 404 {object} dto.ErrorResponse
 // @Failure 429 {object} dto.ErrorResponse
 // @Failure 500 {object} dto.ErrorResponse
@@ -121,13 +121,12 @@ func (h *UploadHandler) Create(ctx *gin.Context) {
 func (h *UploadHandler) Resume(ctx *gin.Context) {
 	// TODO: implement resume upload session
 	h.logger.Info("Resume upload session requested", zap.String("upload_id", ctx.Param("uploadId")), zap.String("trace_id", traceID(ctx)))
-	ctx.JSON(501, dto.ErrorResponse{
-		Error: dto.ErrorPayload{
-			Code:      dto.ErrorCodeNotImplemented,
-			Message:   "Resume upload session is not implemented",
-			RequestID: traceID(ctx),
-		},
-	})
+	response, err := h.service.ResumeUploadSession(ctx.Request.Context(), ctx.Param("uploadId"))
+	if err != nil {
+		h.respondWithServiceError(ctx, err, "Failed to resume upload session")
+		return
+	}
+	ctx.JSON(200, response)
 }
 
 // @Summary Get upload status
@@ -141,7 +140,7 @@ func (h *UploadHandler) Resume(ctx *gin.Context) {
 // @Failure 400 {object} dto.ErrorResponse
 // @Failure 401 {object} dto.ErrorResponse
 // @Failure 403 {object} dto.ErrorResponse
-// @Failure 501 {object} dto.ErrorResponse
+// @Failure 410 {object} dto.ErrorResponse
 // @Failure 404 {object} dto.ErrorResponse
 // @Failure 429 {object} dto.ErrorResponse
 // @Failure 500 {object} dto.ErrorResponse
@@ -150,13 +149,12 @@ func (h *UploadHandler) Resume(ctx *gin.Context) {
 func (h *UploadHandler) GetStatus(ctx *gin.Context) {
 	// TODO: implement get upload session status
 	h.logger.Info("Get upload status requested", zap.String("upload_id", ctx.Param("uploadId")), zap.String("trace_id", traceID(ctx)))
-	ctx.JSON(501, dto.ErrorResponse{
-		Error: dto.ErrorPayload{
-			Code:      dto.ErrorCodeNotImplemented,
-			Message:   "Get upload status is not implemented",
-			RequestID: traceID(ctx),
-		},
-	})
+	response, err := h.service.GetUploadStatus(ctx.Request.Context(), ctx.Param("uploadId"))
+	if err != nil {
+		h.respondWithServiceError(ctx, err, "Failed to fetch upload status")
+		return
+	}
+	ctx.JSON(200, response)
 }
 
 // @Summary Query GCS upload status
@@ -172,7 +170,7 @@ func (h *UploadHandler) GetStatus(ctx *gin.Context) {
 // @Failure 400 {object} dto.ErrorResponse
 // @Failure 401 {object} dto.ErrorResponse
 // @Failure 403 {object} dto.ErrorResponse
-// @Failure 501 {object} dto.ErrorResponse
+// @Failure 410 {object} dto.ErrorResponse
 // @Failure 404 {object} dto.ErrorResponse
 // @Failure 429 {object} dto.ErrorResponse
 // @Failure 500 {object} dto.ErrorResponse
@@ -181,13 +179,25 @@ func (h *UploadHandler) GetStatus(ctx *gin.Context) {
 func (h *UploadHandler) QueryStatus(ctx *gin.Context) {
 	// TODO: implement query GCS status
 	h.logger.Info("Query upload status requested", zap.String("upload_id", ctx.Param("uploadId")), zap.String("trace_id", traceID(ctx)))
-	ctx.JSON(501, dto.ErrorResponse{
-		Error: dto.ErrorPayload{
-			Code:      dto.ErrorCodeNotImplemented,
-			Message:   "Query upload status is not implemented",
-			RequestID: traceID(ctx),
-		},
-	})
+	var req dto.QueryStatusRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Failed to bind request body", zap.Error(err), zap.String("trace_id", traceID(ctx)))
+		ctx.JSON(400, dto.ErrorResponse{
+			Error: dto.ErrorPayload{
+				Code:      dto.ErrorCodeInvalidArgument,
+				Message:   "Invalid request body",
+				RequestID: traceID(ctx),
+			},
+		})
+		return
+	}
+
+	response, err := h.service.QueryUploadStatus(ctx.Request.Context(), ctx.Param("uploadId"), req)
+	if err != nil {
+		h.respondWithServiceError(ctx, err, "Failed to query upload status")
+		return
+	}
+	ctx.JSON(200, response)
 }
 
 // @Summary Cancel upload session
@@ -203,7 +213,7 @@ func (h *UploadHandler) QueryStatus(ctx *gin.Context) {
 // @Failure 400 {object} dto.ErrorResponse
 // @Failure 401 {object} dto.ErrorResponse
 // @Failure 403 {object} dto.ErrorResponse
-// @Failure 501 {object} dto.ErrorResponse
+// @Failure 410 {object} dto.ErrorResponse
 // @Failure 404 {object} dto.ErrorResponse
 // @Failure 429 {object} dto.ErrorResponse
 // @Failure 500 {object} dto.ErrorResponse
@@ -212,12 +222,49 @@ func (h *UploadHandler) QueryStatus(ctx *gin.Context) {
 func (h *UploadHandler) Cancel(ctx *gin.Context) {
 	// TODO: implement cancel upload session
 	h.logger.Info("Cancel upload session requested", zap.String("upload_id", ctx.Param("uploadId")), zap.String("trace_id", traceID(ctx)))
-	ctx.JSON(501, dto.ErrorResponse{
-		Error: dto.ErrorPayload{
-			Code:      dto.ErrorCodeNotImplemented,
-			Message:   "Cancel upload session is not implemented",
-			RequestID: traceID(ctx),
-		},
+	var req dto.CancelUploadRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Failed to bind request body", zap.Error(err), zap.String("trace_id", traceID(ctx)))
+		ctx.JSON(400, dto.ErrorResponse{
+			Error: dto.ErrorPayload{
+				Code:      dto.ErrorCodeInvalidArgument,
+				Message:   "Invalid request body",
+				RequestID: traceID(ctx),
+			},
+		})
+		return
+	}
+
+	response, err := h.service.CancelUploadSession(ctx.Request.Context(), ctx.Param("uploadId"), req)
+	if err != nil {
+		h.respondWithServiceError(ctx, err, "Failed to cancel upload session")
+		return
+	}
+	ctx.JSON(200, response)
+}
+
+func (h *UploadHandler) respondWithServiceError(ctx *gin.Context, err error, message string) {
+	requestID := traceID(ctx)
+	if errors.Is(err, internalerrors.ErrInvalidInput) {
+		ctx.JSON(400, dto.ErrorResponse{
+			Error: dto.ErrorPayload{Code: dto.ErrorCodeInvalidArgument, Message: message, RequestID: requestID},
+		})
+		return
+	}
+	if errors.Is(err, internalerrors.ErrNotFound) {
+		ctx.JSON(404, dto.ErrorResponse{
+			Error: dto.ErrorPayload{Code: dto.ErrorCodeNotFound, Message: "Upload session not found", RequestID: requestID},
+		})
+		return
+	}
+	if errors.Is(err, internalerrors.ErrSessionExpired) {
+		ctx.JSON(410, dto.ErrorResponse{
+			Error: dto.ErrorPayload{Code: dto.ErrorCodeGone, Message: "Upload session expired", RequestID: requestID},
+		})
+		return
+	}
+	ctx.JSON(500, dto.ErrorResponse{
+		Error: dto.ErrorPayload{Code: dto.ErrorCodeInternal, Message: message, RequestID: requestID},
 	})
 }
 
