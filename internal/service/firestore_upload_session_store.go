@@ -6,8 +6,11 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	internalerrors "github.com/AmithSAI007/prj-apex-upload-platform/internal/errors"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/model"
 	"google.golang.org/api/iterator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const uploadSessionsCollection = "upload_sessions"
@@ -34,6 +37,9 @@ func (s *FirestoreUploadSessionStore) Create(ctx context.Context, session *model
 func (s *FirestoreUploadSessionStore) GetByID(ctx context.Context, uploadID string) (*model.UploadSession, error) {
 	snap, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Get(ctx)
 	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, internalerrors.ErrNotFound
+		}
 		return nil, err
 	}
 

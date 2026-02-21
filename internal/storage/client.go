@@ -9,6 +9,11 @@ import (
 	"cloud.google.com/go/storage"
 )
 
+// SignedURLClient defines signed URL creation behavior.
+type SignedURLClient interface {
+	SignResumableUploadURL(bucket string, objectName string, serviceAccount string) (string, error)
+}
+
 // GCSClient wraps the GCS SDK client for shared use.
 type GCSClient struct {
 	client *storage.Client

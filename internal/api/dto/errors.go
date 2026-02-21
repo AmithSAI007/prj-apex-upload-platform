@@ -8,6 +8,7 @@ const (
 	ErrorCodeUnauthorized    ErrorCode = "unauthorized"
 	ErrorCodeForbidden       ErrorCode = "forbidden"
 	ErrorCodeNotFound        ErrorCode = "not_found"
+	ErrorCodeGone            ErrorCode = "gone"
 	ErrorCodeConflict        ErrorCode = "conflict"
 	ErrorCodeRateLimited     ErrorCode = "rate_limited"
 	ErrorCodeNotImplemented  ErrorCode = "not_implemented"
