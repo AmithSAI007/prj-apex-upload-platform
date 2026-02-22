@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/AmithSAI007/prj-apex-upload-platform/api/dto"
+	"github.com/AmithSAI007/prj-apex-upload-platform/pkg/trace"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -13,14 +14,14 @@ func ErrorHandler(logger *zap.Logger) gin.HandlerFunc {
 
 		defer func() {
 			if r := recover(); r != nil {
-				logger.Error("Recovered from panic", zap.Any("error", r), zap.String("trace_id", traceID(c)))
+				logger.Error("Recovered from panic", zap.Any("error", r), zap.String("trace_id", trace.TraceIDFromContext(c)))
 				c.AbortWithStatusJSON(
 					http.StatusInternalServerError,
 					dto.ErrorResponse{
 						Error: dto.ErrorPayload{
 							Code:      dto.ErrorCodeInternal,
 							Message:   "Internal Server Error",
-							RequestID: traceID(c),
+							RequestID: trace.TraceIDFromContext(c),
 						},
 					},
 				)
@@ -31,25 +32,16 @@ func ErrorHandler(logger *zap.Logger) gin.HandlerFunc {
 
 		if len(c.Errors) > 0 {
 			for _, e := range c.Errors {
-				logger.Error("Request error", zap.Error(e.Err), zap.String("trace_id", traceID(c)))
+				logger.Error("Request error", zap.Error(e.Err), zap.String("trace_id", trace.TraceIDFromContext(c)))
 			}
 			c.JSON(http.StatusBadRequest, dto.ErrorResponse{
 				Error: dto.ErrorPayload{
 					Code:      dto.ErrorCodeInvalidArgument,
 					Message:   "Bad Request",
-					RequestID: traceID(c),
+					RequestID: trace.TraceIDFromContext(c),
 				},
 			})
 		}
 
 	}
-}
-
-func traceID(ctx *gin.Context) string {
-	if value, ok := ctx.Get(TraceIDKey); ok {
-		if id, ok := value.(string); ok {
-			return id
-		}
-	}
-	return ""
 }
