@@ -4,9 +4,11 @@ go 1.25.7
 
 require (
 	cloud.google.com/go/firestore v1.21.0
+	cloud.google.com/go/secretmanager v1.16.0
 	cloud.google.com/go/storage v1.60.0
 	github.com/gin-gonic/gin v1.11.0
 	github.com/go-playground/validator/v10 v10.27.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.19.1
 	github.com/spf13/viper v1.21.0

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/AmithSAI007/prj-apex-upload-platform/pkg/trace"
 	"github.com/gin-gonic/gin"
 )
 
@@ -12,7 +13,7 @@ func TestRequestContext_UsesIncomingRequestID(t *testing.T) {
 	router := gin.New()
 	router.Use(RequestContext())
 	router.GET("/", func(ctx *gin.Context) {
-		ctx.JSON(http.StatusOK, gin.H{"trace": TraceIDFromContext(ctx.Request.Context())})
+		ctx.JSON(http.StatusOK, gin.H{"trace": trace.TraceIDFromContext(ctx.Request.Context())})
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -30,7 +31,7 @@ func TestRequestContext_GeneratesRequestID(t *testing.T) {
 	router := gin.New()
 	router.Use(RequestContext())
 	router.GET("/", func(ctx *gin.Context) {
-		ctx.JSON(http.StatusOK, gin.H{"trace": TraceIDFromContext(ctx.Request.Context())})
+		ctx.JSON(http.StatusOK, gin.H{"trace": trace.TraceIDFromContext(ctx.Request.Context())})
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

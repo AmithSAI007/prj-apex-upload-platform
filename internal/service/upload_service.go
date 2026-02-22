@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/AmithSAI007/prj-apex-upload-platform/api/dto"
-	"github.com/AmithSAI007/prj-apex-upload-platform/api/middleware"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/config"
 	internalerrors "github.com/AmithSAI007/prj-apex-upload-platform/internal/errors"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/model"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/storage"
+	"github.com/AmithSAI007/prj-apex-upload-platform/pkg/trace"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -116,7 +116,7 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, req dto.CreateU
 		zap.String("object_name", objectName),
 		zap.String("bucket", bucketName),
 		zap.Int64("size_bytes", req.SizeBytes),
-		zap.String("trace_id", middleware.TraceIDFromContext(ctx)),
+		zap.String("trace_id", trace.TraceIDFromContext(ctx)),
 	)
 	return response, nil
 }
@@ -152,7 +152,7 @@ func (s *UploadService) ResumeUploadSession(ctx context.Context, uploadID string
 	s.logger.Info(
 		"Resumed upload session",
 		zap.String("upload_id", uploadID),
-		zap.String("trace_id", middleware.TraceIDFromContext(ctx)),
+		zap.String("trace_id", trace.TraceIDFromContext(ctx)),
 	)
 
 	return response, nil
@@ -193,7 +193,7 @@ func (s *UploadService) GetUploadStatus(ctx context.Context, uploadID string) (d
 	s.logger.Info(
 		"Fetched upload status",
 		zap.String("upload_id", uploadID),
-		zap.String("trace_id", middleware.TraceIDFromContext(ctx)),
+		zap.String("trace_id", trace.TraceIDFromContext(ctx)),
 	)
 
 	return response, nil
@@ -249,7 +249,7 @@ func (s *UploadService) QueryUploadStatus(ctx context.Context, uploadID string, 
 		"Queried upload status",
 		zap.String("upload_id", uploadID),
 		zap.Bool("refresh", req.Refresh),
-		zap.String("trace_id", middleware.TraceIDFromContext(ctx)),
+		zap.String("trace_id", trace.TraceIDFromContext(ctx)),
 	)
 
 	return response, nil
@@ -289,7 +289,7 @@ func (s *UploadService) CancelUploadSession(ctx context.Context, uploadID string
 		"Cancelled upload session",
 		zap.String("upload_id", uploadID),
 		zap.String("reason", req.Reason),
-		zap.String("trace_id", middleware.TraceIDFromContext(ctx)),
+		zap.String("trace_id", trace.TraceIDFromContext(ctx)),
 	)
 
 	return response, nil

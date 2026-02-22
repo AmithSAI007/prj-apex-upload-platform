@@ -45,7 +45,6 @@ func NewUploadHandler(logger *zap.Logger, validator *validator.Validate, uploadS
 // @Security BearerAuth
 // @Router /uploads [post]
 func (h *UploadHandler) Create(ctx *gin.Context) {
-	// TODO: implement create upload session
 	var req dto.CreateUploadRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		h.logger.Error("Failed to bind request body", zap.Error(err), zap.String("trace_id", traceID(ctx)))

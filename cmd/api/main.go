@@ -22,6 +22,7 @@ import (
 	"github.com/AmithSAI007/prj-apex-upload-platform/api/handler"
 	"github.com/AmithSAI007/prj-apex-upload-platform/api/middleware"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/config"
+	"github.com/AmithSAI007/prj-apex-upload-platform/internal/secrets"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/service"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/storage"
 	"github.com/gin-gonic/gin"
@@ -45,12 +46,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	router := gin.New()
-	router.Use(gin.Recovery())
-	router.Use(middleware.RequestContext())
-	router.Use(middleware.ErrorHandler(logger))
-	router.Use(middleware.PrometheusMetrics())
-
 	validate := validator.New()
 	if cfg.GCPProjectID == "" {
 		logger.Fatal("Missing GCP project ID")
@@ -67,13 +62,33 @@ func main() {
 	}
 	defer firestoreClient.Close()
 
-	store := service.NewFirestoreUploadSessionStore(firestoreClient.Client())
+	secretClient, err := secrets.NewSecretsClient(ctx, logger)
+	if err != nil {
+		logger.Fatal("Failed to initialize Secret Manager client", zap.Error(err))
+	}
+	defer secretClient.Close()
 
+	store := service.NewFirestoreUploadSessionStore(firestoreClient.Client())
+	keyService := service.NewSMKeyService(logger, secretClient)
+	publicKey, err := keyService.LoadKey(ctx, cfg.JWT_PUBLIC_KEY_PATH)
+	if err != nil {
+		logger.Fatal("Failed to load JWT keys", zap.Error(err))
+	}
+	tokenService := service.NewTokenService(logger, cfg, publicKey)
 	uploadService := service.NewUploadService(logger, gcsClient, cfg, store)
+	authMiddleware := middleware.NewAuthMiddleware(logger, tokenService)
+
 	uploadHandler := handler.NewUploadHandler(logger, validate, uploadService)
+
+	router := gin.New()
+	router.Use(gin.Recovery())
+	router.Use(middleware.RequestContext())
+	router.Use(middleware.ErrorHandler(logger))
+	router.Use(middleware.PrometheusMetrics())
 
 	handlers := &api.HandlerRegistry{
 		Upload: uploadHandler,
+		Auth:   authMiddleware,
 	}
 
 	api.SetupRoutes(router, handlers)

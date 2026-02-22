@@ -14,6 +14,7 @@ type Config struct {
 	FirestoreDatabaseID   string `mapstructure:"FIRESTORE_DATABASE_ID"`
 	GCSBucket             string `mapstructure:"GCS_BUCKET"`
 	SERVICE_ACCOUNT_EMAIL string `mapstructure:"SERVICE_ACCOUNT_EMAIL"`
+	JWT_PUBLIC_KEY_PATH   string `mapstructure:"JWT_PUBLIC_KEY_PATH"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -24,6 +25,7 @@ func LoadConfig(path string) (*Config, error) {
 	viper.SetDefault("FIRESTORE_DATABASE_ID", "apex-firestore-db")
 	viper.SetDefault("GCS_BUCKET", "")
 	viper.SetDefault("SERVICE_ACCOUNT_EMAIL", "")
+	viper.SetDefault("JWT_PUBLIC_KEY_PATH", "")
 
 	viper.AddConfigPath(path)
 	viper.SetConfigName("config")

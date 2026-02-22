@@ -34,4 +34,7 @@ go.work.sum
 config.yaml
 
 .github/skills
+keys
 
+# ignoring scripts/ because it contains the build script which is not needed in the repository
+scripts/

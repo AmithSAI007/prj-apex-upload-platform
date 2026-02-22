@@ -2,6 +2,7 @@ package api
 
 import (
 	"github.com/AmithSAI007/prj-apex-upload-platform/api/handler"
+	"github.com/AmithSAI007/prj-apex-upload-platform/api/middleware"
 	"github.com/AmithSAI007/prj-apex-upload-platform/docs"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -11,17 +12,21 @@ import (
 
 type HandlerRegistry struct {
 	Upload *handler.UploadHandler
+	Auth   *middleware.AuthMiddleware
 }
 
 func SetupRoutes(router *gin.Engine, handlers *HandlerRegistry) {
 	v1 := router.Group("/api/v1")
 
 	uploadGroup := v1.Group("/uploads")
-	uploadGroup.POST("", handlers.Upload.Create)
-	uploadGroup.POST("/:uploadId/resume", handlers.Upload.Resume)
-	uploadGroup.GET("/:uploadId", handlers.Upload.GetStatus)
-	uploadGroup.POST("/:uploadId/status", handlers.Upload.QueryStatus)
-	uploadGroup.POST("/:uploadId/cancel", handlers.Upload.Cancel)
+	uploadGroup.Use(handlers.Auth.Authenticate())
+	{
+		uploadGroup.POST("", handlers.Upload.Create)
+		uploadGroup.POST("/:uploadId/resume", handlers.Upload.Resume)
+		uploadGroup.GET("/:uploadId", handlers.Upload.GetStatus)
+		uploadGroup.POST("/:uploadId/status", handlers.Upload.QueryStatus)
+		uploadGroup.POST("/:uploadId/cancel", handlers.Upload.Cancel)
+	}
 
 	v1.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler, ginSwagger.URL("/docs/doc.json")))
 
