@@ -8,28 +8,32 @@ import (
 
 	"github.com/AmithSAI007/prj-apex-upload-platform/api/dto"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/service"
-	"github.com/AmithSAI007/prj-apex-upload-platform/pkg/trace"
+	"github.com/AmithSAI007/prj-apex-upload-platform/pkg/constants"
+
+	pkgtrace "github.com/AmithSAI007/prj-apex-upload-platform/pkg/trace"
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
 type AuthMiddleware struct {
 	logger       *zap.Logger
 	tokenService service.TokenInterface
+	trace        trace.Tracer
 }
 
-type ctxKey string
-
 const (
-	authHeaderKey        = "Authorization"
-	bearerPrefix         = "Bearer"
-	ctxUserIDKey  ctxKey = "user_id"
+	authHeaderKey = "Authorization"
+	bearerPrefix  = "Bearer"
 )
 
-func NewAuthMiddleware(logger *zap.Logger, tokenService service.TokenInterface) *AuthMiddleware {
+func NewAuthMiddleware(logger *zap.Logger, tokenService service.TokenInterface, tracer trace.Tracer) *AuthMiddleware {
 	return &AuthMiddleware{
 		logger:       logger,
 		tokenService: tokenService,
+		trace:        tracer,
 	}
 
 }
@@ -37,16 +41,24 @@ func NewAuthMiddleware(logger *zap.Logger, tokenService service.TokenInterface) 
 func (m *AuthMiddleware) Authenticate() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		authHeader := ctx.GetHeader(authHeaderKey)
+		traceID := pkgtrace.TraceIDFromContext(ctx)
+		_, span := m.trace.Start(ctx.Request.Context(), "/api/middleware/auth/Authenticate")
+		defer span.End()
+
 		if authHeader == "" {
-			m.logger.Warn("Missing Authorization header", zap.String("trace_id", trace.TraceIDFromContext(ctx)))
-			abortUnauthorized(ctx, "Missing Authorization header")
+			span.RecordError(errors.New("missing Authorization header"))
+			span.SetStatus(codes.Error, "Missing Authorization header")
+			m.logger.Warn("Missing Authorization header", zap.String("trace_id", traceID))
+			abortUnauthorized(ctx, "Missing Authorization header", traceID)
 			return
 		}
 
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], bearerPrefix) {
-			m.logger.Warn("Invalid Authorization header format", zap.String("trace_id", trace.TraceIDFromContext(ctx)))
-			abortUnauthorized(ctx, "Invalid Authorization header format")
+			span.RecordError(errors.New("invalid Authorization header format"))
+			span.SetStatus(codes.Error, "Invalid Authorization header format")
+			m.logger.Warn("Invalid Authorization header format", zap.String("trace_id", traceID))
+			abortUnauthorized(ctx, "Invalid Authorization header format", traceID)
 			return
 		}
 
@@ -56,33 +68,44 @@ func (m *AuthMiddleware) Authenticate() gin.HandlerFunc {
 		if err != nil {
 			switch {
 			case errors.Is(err, service.ErrExpiredToken):
-				m.logger.Warn("Token expired", zap.String("trace_id", trace.TraceIDFromContext(ctx)))
-				abortUnauthorized(ctx, "Token expired")
+				m.logger.Warn("Token expired", zap.String("trace_id", traceID))
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "Token expired")
+				abortUnauthorized(ctx, "Token expired", traceID)
 			case errors.Is(err, service.ErrInvalidSignature):
-				m.logger.Warn("Invalid token signature", zap.String("trace_id", trace.TraceIDFromContext(ctx)))
-				abortUnauthorized(ctx, "Invalid token signature")
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "Invalid token signature")
+				m.logger.Warn("Invalid token signature", zap.String("trace_id", traceID))
+				abortUnauthorized(ctx, "Invalid token signature", traceID)
 			case errors.Is(err, service.ErrInvalidTokenType):
-				m.logger.Warn("Invalid token type", zap.String("trace_id", trace.TraceIDFromContext(ctx)))
-				abortUnauthorized(ctx, "Invalid token type")
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "Invalid token type")
+				m.logger.Warn("Invalid token type", zap.String("trace_id", traceID))
+				abortUnauthorized(ctx, "Invalid token type", traceID)
 			default:
-				m.logger.Warn("Token validation failed", zap.Error(err), zap.String("trace_id", trace.TraceIDFromContext(ctx)))
-				abortUnauthorized(ctx, "Invalid token")
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "Invalid token")
+				m.logger.Warn("Token validation failed", zap.Error(err), zap.String("trace_id", traceID))
+				abortUnauthorized(ctx, "Invalid token", traceID)
 
 			}
+			return
 		}
 
-		c := context.WithValue(ctx.Request.Context(), ctxUserIDKey, claims.UserID)
+		span.SetAttributes(attribute.String("user_id", claims.UserID))
+		span.SetStatus(codes.Ok, "Token validated successfully")
+		c := context.WithValue(ctx.Request.Context(), constants.CtxUserIDKey, claims.UserID)
 		ctx.Request = ctx.Request.WithContext(c)
 		ctx.Next()
 	}
 }
 
-func abortUnauthorized(ctx *gin.Context, message string) {
+func abortUnauthorized(ctx *gin.Context, message string, traceID string) {
 	ctx.AbortWithStatusJSON(http.StatusUnauthorized, dto.ErrorResponse{
 		Error: dto.ErrorPayload{
 			Code:      dto.ErrorCodeUnauthorized,
 			Message:   message,
-			RequestID: trace.TraceIDFromContext(ctx),
+			RequestID: traceID,
 		},
 	})
 }

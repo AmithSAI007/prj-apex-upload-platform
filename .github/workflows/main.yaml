@@ -1,0 +1,105 @@
+name: Deploy Cloud Run Service
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target Environment"
+        required: true
+        default: "development"
+        type: choice
+        options:
+          - development
+          - production
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  GO_VERSION: ">=1.25"
+
+jobs:
+  determine_environment:
+    name: "Determine Environment"
+    runs-on: ubuntu-24.04
+    outputs:
+      environment: ${{ steps.get_env.outputs.environment }}
+      dir: ${{ steps.get_env.outputs.dir }}
+    steps:
+      - id: get_env
+        name: Set environment for this workflow run
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "environment=development" >> $GITHUB_OUTPUT
+            echo "dir=./terraform/environments/development" >> $GITHUB_OUTPUT
+          else
+            ENVIRONMENT="${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}"
+            echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+            echo "dir=./terraform/environments/$ENVIRONMENT" >> $GITHUB_OUTPUT
+          fi
+
+  security_scan:
+    name: "Run Security Scan"
+    runs-on: ubuntu-24.04
+    needs: determine_environment
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go for Trivy
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install dependencies for scanning
+        run: |
+          go mod tidy
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "table"
+          severity: "CRITICAL,HIGH,MEDIUM"
+
+  test:
+    name: "Run Tests"
+    runs-on: ubuntu-24.04
+    needs: security_scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install dependencies for testing
+        run: |
+          go mod tidy
+
+      - name: Run tests with coverage
+        run: |
+          go test -v -coverprofile=coverage.out ./...
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out

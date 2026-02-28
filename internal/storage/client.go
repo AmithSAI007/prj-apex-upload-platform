@@ -7,16 +7,19 @@ import (
 	"time"
 
 	"cloud.google.com/go/storage"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SignedURLClient defines signed URL creation behavior.
 type SignedURLClient interface {
-	SignResumableUploadURL(bucket string, objectName string, serviceAccount string) (string, error)
+	SignResumableUploadURL(ctx context.Context, bucket string, objectName string, serviceAccount string) (string, error)
 }
 
 // GCSClient wraps the GCS SDK client for shared use.
 type GCSClient struct {
 	client *storage.Client
+	trace  trace.Tracer
 }
 
 // SignedURLOptions configures resumable upload URL signing.
@@ -26,13 +29,13 @@ type SignedURLOptions struct {
 }
 
 // NewGCSClient initializes a GCS client with ADC.
-func NewGCSClient(ctx context.Context) (*GCSClient, error) {
+func NewGCSClient(ctx context.Context, trace trace.Tracer) (*GCSClient, error) {
 	client, err := storage.NewClient(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	return &GCSClient{client: client}, nil
+	return &GCSClient{client: client, trace: trace}, nil
 }
 
 // Client returns the underlying storage client.
@@ -41,8 +44,14 @@ func (c *GCSClient) Client() *storage.Client {
 }
 
 // SignResumableUploadURL creates a signed URL for resumable uploads.
-func (c *GCSClient) SignResumableUploadURL(bucket string, objectName string, serviceAccount string) (string, error) {
+func (c *GCSClient) SignResumableUploadURL(ctx context.Context, bucket string, objectName string, serviceAccount string) (string, error) {
+
+	ctx, span := c.trace.Start(ctx, "SignResumableUploadURL")
+	defer span.End()
+
 	if bucket == "" || objectName == "" || serviceAccount == "" {
+		span.RecordError(errors.New("bucket, object name, and service account are required"))
+		span.SetStatus(codes.Error, "Invalid input parameters")
 		return "", errors.New("bucket and object name are required")
 	}
 
@@ -58,9 +67,12 @@ func (c *GCSClient) SignResumableUploadURL(bucket string, objectName string, ser
 
 	u, err := c.client.Bucket(bucket).SignedURL(objectName, opts)
 	if err != nil {
+		span.RecordError(fmt.Errorf("failed to sign URL: %w", err))
+		span.SetStatus(codes.Error, "Failed to sign URL")
 		return "", fmt.Errorf("Bucket(%q).SignedURL: %w", bucket, err)
 	}
 
+	span.SetStatus(codes.Ok, "Successfully signed URL")
 	return u, nil
 }
 

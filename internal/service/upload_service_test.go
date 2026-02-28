@@ -12,6 +12,7 @@ import (
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/config"
 	internalerrors "github.com/AmithSAI007/prj-apex-upload-platform/internal/errors"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/model"
+	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 )
 
@@ -20,7 +21,7 @@ type fakeSignedURLClient struct {
 	Err error
 }
 
-func (f *fakeSignedURLClient) SignResumableUploadURL(_ string, _ string, _ string) (string, error) {
+func (f *fakeSignedURLClient) SignResumableUploadURL(_ context.Context, _ string, _ string, _ string) (string, error) {
 	if f.Err != nil {
 		return "", f.Err
 	}
@@ -90,7 +91,7 @@ func (f *fakeUploadSessionStore) MarkExpired(_ context.Context, _ string) error 
 }
 
 func TestCreateUploadSession_InvalidInput(t *testing.T) {
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, &fakeUploadSessionStore{})
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, &fakeUploadSessionStore{}, otel.Tracer("test"))
 	_, err := service.CreateUploadSession(context.Background(), dto.CreateUploadRequest{})
 	if !errors.Is(err, internalerrors.ErrInvalidInput) {
 		t.Fatalf("expected invalid input error")
@@ -98,7 +99,7 @@ func TestCreateUploadSession_InvalidInput(t *testing.T) {
 }
 
 func TestCreateUploadSession_MissingBucket(t *testing.T) {
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{}, &fakeUploadSessionStore{})
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{}, &fakeUploadSessionStore{}, otel.Tracer("test"))
 	_, err := service.CreateUploadSession(context.Background(), dto.CreateUploadRequest{FileName: "file", ContentType: "video/mp4", SizeBytes: 1})
 	if err == nil {
 		t.Fatalf("expected missing bucket error")
@@ -106,7 +107,7 @@ func TestCreateUploadSession_MissingBucket(t *testing.T) {
 }
 
 func TestCreateUploadSession_MissingStore(t *testing.T) {
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, nil)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, nil, otel.Tracer("test"))
 	_, err := service.CreateUploadSession(context.Background(), dto.CreateUploadRequest{FileName: "file", ContentType: "video/mp4", SizeBytes: 1})
 	if err == nil {
 		t.Fatalf("expected missing store error")
@@ -124,7 +125,7 @@ func TestCreateUploadSession_IdempotencyHit(t *testing.T) {
 			ExpiresAt:    time.Now().Add(10 * time.Minute),
 		},
 	}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket", SERVICE_ACCOUNT_EMAIL: "sa"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket", SERVICE_ACCOUNT_EMAIL: "sa"}, store, otel.Tracer("test"))
 
 	resp, err := service.CreateUploadSession(context.Background(), dto.CreateUploadRequest{FileName: "file", ContentType: "video/mp4", SizeBytes: 1, IdempotencyKey: "idemp"})
 	if err != nil {
@@ -137,7 +138,7 @@ func TestCreateUploadSession_IdempotencyHit(t *testing.T) {
 
 func TestCreateUploadSession_IdempotencyLookupError(t *testing.T) {
 	store := &fakeUploadSessionStore{lookupErr: errors.New("lookup failed")}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket", SERVICE_ACCOUNT_EMAIL: "sa"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket", SERVICE_ACCOUNT_EMAIL: "sa"}, store, otel.Tracer("test"))
 
 	_, err := service.CreateUploadSession(context.Background(), dto.CreateUploadRequest{FileName: "file", ContentType: "video/mp4", SizeBytes: 1, IdempotencyKey: "idemp"})
 	if err == nil {
@@ -147,7 +148,7 @@ func TestCreateUploadSession_IdempotencyLookupError(t *testing.T) {
 
 func TestCreateUploadSession_SignURLFailure(t *testing.T) {
 	store := &fakeUploadSessionStore{}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{Err: errors.New("sign failed")}, &config.Config{GCSBucket: "bucket", SERVICE_ACCOUNT_EMAIL: "sa"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{Err: errors.New("sign failed")}, &config.Config{GCSBucket: "bucket", SERVICE_ACCOUNT_EMAIL: "sa"}, store, otel.Tracer("test"))
 
 	_, err := service.CreateUploadSession(context.Background(), dto.CreateUploadRequest{FileName: "file", ContentType: "video/mp4", SizeBytes: 1})
 	if err == nil {
@@ -157,7 +158,7 @@ func TestCreateUploadSession_SignURLFailure(t *testing.T) {
 
 func TestCreateUploadSession_PersistFailure(t *testing.T) {
 	store := &fakeUploadSessionStore{createErr: errors.New("db error")}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket", SERVICE_ACCOUNT_EMAIL: "sa"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket", SERVICE_ACCOUNT_EMAIL: "sa"}, store, otel.Tracer("test"))
 
 	_, err := service.CreateUploadSession(context.Background(), dto.CreateUploadRequest{FileName: "file", ContentType: "video/mp4", SizeBytes: 1})
 	if err == nil {
@@ -167,7 +168,7 @@ func TestCreateUploadSession_PersistFailure(t *testing.T) {
 
 func TestCreateUploadSession_Success(t *testing.T) {
 	store := &fakeUploadSessionStore{}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket", SERVICE_ACCOUNT_EMAIL: "sa"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket", SERVICE_ACCOUNT_EMAIL: "sa"}, store, otel.Tracer("test"))
 
 	resp, err := service.CreateUploadSession(context.Background(), dto.CreateUploadRequest{
 		FileName:       "file.mp4",
@@ -194,7 +195,7 @@ func TestCreateUploadSession_Success(t *testing.T) {
 }
 
 func TestResumeUploadSession_InvalidInput(t *testing.T) {
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, &fakeUploadSessionStore{})
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, &fakeUploadSessionStore{}, otel.Tracer("test"))
 	_, err := service.ResumeUploadSession(context.Background(), "")
 	if !errors.Is(err, internalerrors.ErrInvalidInput) {
 		t.Fatalf("expected invalid input error")
@@ -202,7 +203,7 @@ func TestResumeUploadSession_InvalidInput(t *testing.T) {
 }
 
 func TestResumeUploadSession_MissingStore(t *testing.T) {
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, nil)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, nil, otel.Tracer("test"))
 	_, err := service.ResumeUploadSession(context.Background(), "upl_1")
 	if err == nil {
 		t.Fatalf("expected missing store error")
@@ -211,7 +212,7 @@ func TestResumeUploadSession_MissingStore(t *testing.T) {
 
 func TestResumeUploadSession_NotFound(t *testing.T) {
 	store := &fakeUploadSessionStore{}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 	_, err := service.ResumeUploadSession(context.Background(), "upl_1")
 	if !errors.Is(err, internalerrors.ErrNotFound) {
 		t.Fatalf("expected not found error")
@@ -226,7 +227,7 @@ func TestResumeUploadSession_Expired(t *testing.T) {
 			ExpiresAt: time.Now().Add(-1 * time.Minute),
 		},
 	}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 	_, err := service.ResumeUploadSession(context.Background(), "upl_1")
 	if !errors.Is(err, internalerrors.ErrSessionExpired) {
 		t.Fatalf("expected expired error")
@@ -242,7 +243,7 @@ func TestResumeUploadSession_Success(t *testing.T) {
 			ExpiresAt:    time.Now().Add(10 * time.Minute),
 		},
 	}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 	resp, err := service.ResumeUploadSession(context.Background(), "upl_1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -253,7 +254,7 @@ func TestResumeUploadSession_Success(t *testing.T) {
 }
 
 func TestGetUploadStatus_InvalidInput(t *testing.T) {
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, &fakeUploadSessionStore{})
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, &fakeUploadSessionStore{}, otel.Tracer("test"))
 	_, err := service.GetUploadStatus(context.Background(), "")
 	if !errors.Is(err, internalerrors.ErrInvalidInput) {
 		t.Fatalf("expected invalid input error")
@@ -261,7 +262,7 @@ func TestGetUploadStatus_InvalidInput(t *testing.T) {
 }
 
 func TestGetUploadStatus_MissingStore(t *testing.T) {
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, nil)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, nil, otel.Tracer("test"))
 	_, err := service.GetUploadStatus(context.Background(), "upl_1")
 	if err == nil {
 		t.Fatalf("expected missing store error")
@@ -270,7 +271,7 @@ func TestGetUploadStatus_MissingStore(t *testing.T) {
 
 func TestGetUploadStatus_NotFound(t *testing.T) {
 	store := &fakeUploadSessionStore{}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 	_, err := service.GetUploadStatus(context.Background(), "upl_1")
 	if !errors.Is(err, internalerrors.ErrNotFound) {
 		t.Fatalf("expected not found error")
@@ -285,7 +286,7 @@ func TestGetUploadStatus_Expired(t *testing.T) {
 			ExpiresAt: time.Now().Add(-1 * time.Minute),
 		},
 	}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 	_, err := service.GetUploadStatus(context.Background(), "upl_1")
 	if !errors.Is(err, internalerrors.ErrSessionExpired) {
 		t.Fatalf("expected expired error")
@@ -307,7 +308,7 @@ func TestGetUploadStatus_Success(t *testing.T) {
 			UploadedBytes: 10,
 		},
 	}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 	resp, err := service.GetUploadStatus(context.Background(), "upl_1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -318,7 +319,7 @@ func TestGetUploadStatus_Success(t *testing.T) {
 }
 
 func TestQueryUploadStatus_InvalidInput(t *testing.T) {
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, &fakeUploadSessionStore{})
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, &fakeUploadSessionStore{}, otel.Tracer("test"))
 	_, err := service.QueryUploadStatus(context.Background(), "", dto.QueryStatusRequest{})
 	if !errors.Is(err, internalerrors.ErrInvalidInput) {
 		t.Fatalf("expected invalid input error")
@@ -326,7 +327,7 @@ func TestQueryUploadStatus_InvalidInput(t *testing.T) {
 }
 
 func TestQueryUploadStatus_MissingStore(t *testing.T) {
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, nil)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, nil, otel.Tracer("test"))
 	_, err := service.QueryUploadStatus(context.Background(), "upl_1", dto.QueryStatusRequest{})
 	if err == nil {
 		t.Fatalf("expected missing store error")
@@ -335,7 +336,7 @@ func TestQueryUploadStatus_MissingStore(t *testing.T) {
 
 func TestQueryUploadStatus_NotFound(t *testing.T) {
 	store := &fakeUploadSessionStore{}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 	_, err := service.QueryUploadStatus(context.Background(), "upl_1", dto.QueryStatusRequest{})
 	if !errors.Is(err, internalerrors.ErrNotFound) {
 		t.Fatalf("expected not found error")
@@ -350,7 +351,7 @@ func TestQueryUploadStatus_Expired(t *testing.T) {
 			ExpiresAt: time.Now().Add(-1 * time.Minute),
 		},
 	}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 	_, err := service.QueryUploadStatus(context.Background(), "upl_1", dto.QueryStatusRequest{})
 	if !errors.Is(err, internalerrors.ErrSessionExpired) {
 		t.Fatalf("expected expired error")
@@ -367,7 +368,7 @@ func TestQueryUploadStatus_Success(t *testing.T) {
 			SizeBytes:     1000,
 		},
 	}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 	resp, err := service.QueryUploadStatus(context.Background(), "upl_1", dto.QueryStatusRequest{Refresh: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -387,7 +388,7 @@ func TestQueryUploadStatus_RefreshUpdatesBytes(t *testing.T) {
 			GCSUploadURL: "http://example.com/upload",
 		},
 	}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Range", "bytes=0-499")
@@ -418,7 +419,7 @@ func TestQueryUploadStatus_RefreshCompletes(t *testing.T) {
 			GCSUploadURL: "http://example.com/upload",
 		},
 	}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -439,7 +440,7 @@ func TestQueryUploadStatus_RefreshCompletes(t *testing.T) {
 }
 
 func TestCancelUploadSession_InvalidInput(t *testing.T) {
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, &fakeUploadSessionStore{})
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, &fakeUploadSessionStore{}, otel.Tracer("test"))
 	_, err := service.CancelUploadSession(context.Background(), "", dto.CancelUploadRequest{})
 	if !errors.Is(err, internalerrors.ErrInvalidInput) {
 		t.Fatalf("expected invalid input error")
@@ -447,7 +448,7 @@ func TestCancelUploadSession_InvalidInput(t *testing.T) {
 }
 
 func TestCancelUploadSession_MissingStore(t *testing.T) {
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, nil)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, nil, otel.Tracer("test"))
 	_, err := service.CancelUploadSession(context.Background(), "upl_1", dto.CancelUploadRequest{})
 	if err == nil {
 		t.Fatalf("expected missing store error")
@@ -456,7 +457,7 @@ func TestCancelUploadSession_MissingStore(t *testing.T) {
 
 func TestCancelUploadSession_NotFound(t *testing.T) {
 	store := &fakeUploadSessionStore{}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 	_, err := service.CancelUploadSession(context.Background(), "upl_1", dto.CancelUploadRequest{})
 	if !errors.Is(err, internalerrors.ErrNotFound) {
 		t.Fatalf("expected not found error")
@@ -471,7 +472,7 @@ func TestCancelUploadSession_Expired(t *testing.T) {
 			ExpiresAt: time.Now().Add(-1 * time.Minute),
 		},
 	}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 	_, err := service.CancelUploadSession(context.Background(), "upl_1", dto.CancelUploadRequest{})
 	if !errors.Is(err, internalerrors.ErrSessionExpired) {
 		t.Fatalf("expected expired error")
@@ -486,7 +487,7 @@ func TestCancelUploadSession_Success(t *testing.T) {
 			ExpiresAt: time.Now().Add(10 * time.Minute),
 		},
 	}
-	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store)
+	service := NewUploadService(zap.NewNop(), &fakeSignedURLClient{url: "signed"}, &config.Config{GCSBucket: "bucket"}, store, otel.Tracer("test"))
 	resp, err := service.CancelUploadSession(context.Background(), "upl_1", dto.CancelUploadRequest{Reason: "user_cancelled"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

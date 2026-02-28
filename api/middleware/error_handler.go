@@ -14,14 +14,15 @@ func ErrorHandler(logger *zap.Logger) gin.HandlerFunc {
 
 		defer func() {
 			if r := recover(); r != nil {
-				logger.Error("Recovered from panic", zap.Any("error", r), zap.String("trace_id", trace.TraceIDFromContext(c)))
+				traceID := trace.TraceIDFromContext(c.Request.Context())
+				logger.Error("Recovered from panic", zap.Any("error", r), zap.String("trace_id", traceID))
 				c.AbortWithStatusJSON(
 					http.StatusInternalServerError,
 					dto.ErrorResponse{
 						Error: dto.ErrorPayload{
 							Code:      dto.ErrorCodeInternal,
 							Message:   "Internal Server Error",
-							RequestID: trace.TraceIDFromContext(c),
+							RequestID: traceID,
 						},
 					},
 				)
@@ -31,14 +32,15 @@ func ErrorHandler(logger *zap.Logger) gin.HandlerFunc {
 		c.Next()
 
 		if len(c.Errors) > 0 {
+			traceID := trace.TraceIDFromContext(c.Request.Context())
 			for _, e := range c.Errors {
-				logger.Error("Request error", zap.Error(e.Err), zap.String("trace_id", trace.TraceIDFromContext(c)))
+				logger.Error("Request error", zap.Error(e.Err), zap.String("trace_id", traceID))
 			}
 			c.JSON(http.StatusBadRequest, dto.ErrorResponse{
 				Error: dto.ErrorPayload{
 					Code:      dto.ErrorCodeInvalidArgument,
 					Message:   "Bad Request",
-					RequestID: trace.TraceIDFromContext(c),
+					RequestID: traceID,
 				},
 			})
 		}

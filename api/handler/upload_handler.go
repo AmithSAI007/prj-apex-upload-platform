@@ -4,11 +4,16 @@ import (
 	"errors"
 
 	"github.com/AmithSAI007/prj-apex-upload-platform/api/dto"
-	"github.com/AmithSAI007/prj-apex-upload-platform/api/middleware"
 	internalerrors "github.com/AmithSAI007/prj-apex-upload-platform/internal/errors"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/service"
+	"github.com/AmithSAI007/prj-apex-upload-platform/pkg/constants"
+	pkgtrace "github.com/AmithSAI007/prj-apex-upload-platform/pkg/trace"
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	otrace "go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -46,55 +51,77 @@ func NewUploadHandler(logger *zap.Logger, validator *validator.Validate, uploadS
 // @Router /uploads [post]
 func (h *UploadHandler) Create(ctx *gin.Context) {
 	var req dto.CreateUploadRequest
+	traceID := pkgtrace.TraceIDFromContext(ctx.Request.Context())
+	trace := otel.Tracer("github.com/AmithSAI007/prj-apex-upload-platform")
+	bindCtx, bindSpan := trace.Start(ctx.Request.Context(), "/api/handler/UploadHandler/BindCreateUploadRequest")
+	defer bindSpan.End()
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		h.logger.Error("Failed to bind request body", zap.Error(err), zap.String("trace_id", traceID(ctx)))
+		h.logger.Error("Failed to bind request body", zap.Error(err), zap.String("trace_id", traceID))
+		bindSpan.RecordError(err)
+		bindSpan.SetStatus(codes.Error, "Failed to bind request body")
 		ctx.JSON(400, dto.ErrorResponse{
 			Error: dto.ErrorPayload{
 				Code:      dto.ErrorCodeInvalidArgument,
 				Message:   "Invalid request body",
-				RequestID: traceID(ctx),
+				RequestID: traceID,
 			},
 		})
 		return
 	}
 
 	if err := h.validator.Struct(req); err != nil {
-		h.logger.Error("Validation failed for request body", zap.Error(err), zap.String("trace_id", traceID(ctx)))
+		h.logger.Error("Validation failed for request body", zap.Error(err), zap.String("trace_id", traceID))
+		bindSpan.RecordError(err)
+		bindSpan.SetStatus(codes.Error, "Validation failed for request body")
 		ctx.JSON(400, dto.ErrorResponse{
 			Error: dto.ErrorPayload{
 				Code:      dto.ErrorCodeInvalidArgument,
 				Message:   "Validation failed",
-				RequestID: traceID(ctx),
+				RequestID: traceID,
 				Details:   []dto.ErrorDetail{{Message: err.Error()}},
 			},
 		})
 		return
 	}
 
-	response, err := h.service.CreateUploadSession(ctx.Request.Context(), req)
+	// set useful attributes for downstream tracing and observability
+	bindSpan.SetAttributes(
+		attribute.String("file_name", req.FileName),
+		attribute.String("trace_id", traceID),
+		attribute.String("tenant_id", pkgtrace.DataFromContext(ctx.Request.Context(), string(constants.CtxTenantIDKey))),
+		attribute.String("user_id", pkgtrace.DataFromContext(ctx.Request.Context(), string(constants.CtxUserIDKey))),
+	)
+
+	// propagate the span context into service calls by using the bind span context
+	response, err := h.service.CreateUploadSession(bindCtx, req)
 	if err != nil {
 		if errors.Is(err, internalerrors.ErrInvalidInput) {
-			h.logger.Warn("Invalid upload create request", zap.Error(err), zap.String("trace_id", traceID(ctx)))
+			h.logger.Warn("Invalid upload create request", zap.Error(err), zap.String("trace_id", traceID))
+			bindSpan.RecordError(err)
+			bindSpan.SetStatus(codes.Error, "Invalid upload create request")
 			ctx.JSON(400, dto.ErrorResponse{
 				Error: dto.ErrorPayload{
 					Code:      dto.ErrorCodeInvalidArgument,
 					Message:   "Invalid request",
-					RequestID: traceID(ctx),
+					RequestID: traceID,
 				},
 			})
 			return
 		}
-		h.logger.Error("Failed to create upload session", zap.Error(err), zap.String("trace_id", traceID(ctx)))
+		h.logger.Error("Failed to create upload session", zap.Error(err), zap.String("trace_id", traceID))
+		bindSpan.RecordError(err)
+		bindSpan.SetStatus(codes.Error, "Failed to create upload session")
 		ctx.JSON(500, dto.ErrorResponse{
 			Error: dto.ErrorPayload{
 				Code:      dto.ErrorCodeInternal,
 				Message:   "Failed to create upload session",
-				RequestID: traceID(ctx),
+				RequestID: traceID,
 			},
 		})
 		return
 	}
 
+	bindSpan.SetStatus(codes.Ok, "Upload session created successfully")
 	ctx.JSON(201, response)
 }
 
@@ -118,13 +145,29 @@ func (h *UploadHandler) Create(ctx *gin.Context) {
 // @Security BearerAuth
 // @Router /uploads/{uploadId}/resume [post]
 func (h *UploadHandler) Resume(ctx *gin.Context) {
-	// TODO: implement resume upload session
-	h.logger.Info("Resume upload session requested", zap.String("upload_id", ctx.Param("uploadId")), zap.String("trace_id", traceID(ctx)))
-	response, err := h.service.ResumeUploadSession(ctx.Request.Context(), ctx.Param("uploadId"))
+	traceID := pkgtrace.TraceIDFromContext(ctx.Request.Context())
+	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-upload-platform")
+	svcCtx, span := tracer.Start(ctx.Request.Context(), "/api/handler/UploadHandler/ResumeUploadSession")
+	defer span.End()
+
+	uploadID := ctx.Param("uploadId")
+	span.SetAttributes(
+		attribute.String("upload_id", uploadID),
+		attribute.String("trace_id", traceID),
+		attribute.String("tenant_id", pkgtrace.DataFromContext(ctx.Request.Context(), string(constants.CtxTenantIDKey))),
+		attribute.String("user_id", pkgtrace.DataFromContext(ctx.Request.Context(), string(constants.CtxUserIDKey))),
+	)
+
+	h.logger.Info("Resume upload session requested", zap.String("upload_id", uploadID), zap.String("trace_id", traceID))
+	response, err := h.service.ResumeUploadSession(svcCtx, uploadID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to resume upload session")
 		h.respondWithServiceError(ctx, err, "Failed to resume upload session")
 		return
 	}
+
+	span.SetStatus(codes.Ok, "Upload session resumed successfully")
 	ctx.JSON(200, response)
 }
 
@@ -146,13 +189,29 @@ func (h *UploadHandler) Resume(ctx *gin.Context) {
 // @Security BearerAuth
 // @Router /uploads/{uploadId} [get]
 func (h *UploadHandler) GetStatus(ctx *gin.Context) {
-	// TODO: implement get upload session status
-	h.logger.Info("Get upload status requested", zap.String("upload_id", ctx.Param("uploadId")), zap.String("trace_id", traceID(ctx)))
-	response, err := h.service.GetUploadStatus(ctx.Request.Context(), ctx.Param("uploadId"))
+	traceID := pkgtrace.TraceIDFromContext(ctx.Request.Context())
+	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-upload-platform")
+	svcCtx, span := tracer.Start(ctx.Request.Context(), "/api/handler/UploadHandler/GetUploadStatus")
+	defer span.End()
+
+	uploadID := ctx.Param("uploadId")
+	span.SetAttributes(
+		attribute.String("upload_id", uploadID),
+		attribute.String("trace_id", traceID),
+		attribute.String("tenant_id", pkgtrace.DataFromContext(ctx.Request.Context(), string(constants.CtxTenantIDKey))),
+		attribute.String("user_id", pkgtrace.DataFromContext(ctx.Request.Context(), string(constants.CtxUserIDKey))),
+	)
+
+	h.logger.Info("Get upload status requested", zap.String("upload_id", uploadID), zap.String("trace_id", traceID))
+	response, err := h.service.GetUploadStatus(svcCtx, uploadID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to fetch upload status")
 		h.respondWithServiceError(ctx, err, "Failed to fetch upload status")
 		return
 	}
+
+	span.SetStatus(codes.Ok, "Upload status fetched successfully")
 	ctx.JSON(200, response)
 }
 
@@ -176,26 +235,44 @@ func (h *UploadHandler) GetStatus(ctx *gin.Context) {
 // @Security BearerAuth
 // @Router /uploads/{uploadId}/status [post]
 func (h *UploadHandler) QueryStatus(ctx *gin.Context) {
-	// TODO: implement query GCS status
-	h.logger.Info("Query upload status requested", zap.String("upload_id", ctx.Param("uploadId")), zap.String("trace_id", traceID(ctx)))
+	traceID := pkgtrace.TraceIDFromContext(ctx.Request.Context())
+	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-upload-platform")
+	svcCtx, span := tracer.Start(ctx.Request.Context(), "/api/handler/UploadHandler/QueryUploadStatus")
+	defer span.End()
+
+	uploadID := ctx.Param("uploadId")
+	span.SetAttributes(
+		attribute.String("upload_id", uploadID),
+		attribute.String("trace_id", traceID),
+		attribute.String("tenant_id", pkgtrace.DataFromContext(ctx.Request.Context(), string(constants.CtxTenantIDKey))),
+		attribute.String("user_id", pkgtrace.DataFromContext(ctx.Request.Context(), string(constants.CtxUserIDKey))),
+	)
+
+	h.logger.Info("Query upload status requested", zap.String("upload_id", uploadID), zap.String("trace_id", traceID))
 	var req dto.QueryStatusRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		h.logger.Error("Failed to bind request body", zap.Error(err), zap.String("trace_id", traceID(ctx)))
+		h.logger.Error("Failed to bind request body", zap.Error(err), zap.String("trace_id", traceID))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to bind request body")
 		ctx.JSON(400, dto.ErrorResponse{
 			Error: dto.ErrorPayload{
 				Code:      dto.ErrorCodeInvalidArgument,
 				Message:   "Invalid request body",
-				RequestID: traceID(ctx),
+				RequestID: traceID,
 			},
 		})
 		return
 	}
 
-	response, err := h.service.QueryUploadStatus(ctx.Request.Context(), ctx.Param("uploadId"), req)
+	response, err := h.service.QueryUploadStatus(svcCtx, uploadID, req)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to query upload status")
 		h.respondWithServiceError(ctx, err, "Failed to query upload status")
 		return
 	}
+
+	span.SetStatus(codes.Ok, "Upload status queried successfully")
 	ctx.JSON(200, response)
 }
 
@@ -219,31 +296,56 @@ func (h *UploadHandler) QueryStatus(ctx *gin.Context) {
 // @Security BearerAuth
 // @Router /uploads/{uploadId}/cancel [post]
 func (h *UploadHandler) Cancel(ctx *gin.Context) {
-	// TODO: implement cancel upload session
-	h.logger.Info("Cancel upload session requested", zap.String("upload_id", ctx.Param("uploadId")), zap.String("trace_id", traceID(ctx)))
+	traceID := pkgtrace.TraceIDFromContext(ctx.Request.Context())
+	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-upload-platform")
+	svcCtx, span := tracer.Start(ctx.Request.Context(), "/api/handler/UploadHandler/CancelUploadSession")
+	defer span.End()
+
+	uploadID := ctx.Param("uploadId")
+	span.SetAttributes(
+		attribute.String("upload_id", uploadID),
+		attribute.String("trace_id", traceID),
+		attribute.String("tenant_id", pkgtrace.DataFromContext(ctx.Request.Context(), string(constants.CtxTenantIDKey))),
+		attribute.String("user_id", pkgtrace.DataFromContext(ctx.Request.Context(), string(constants.CtxUserIDKey))),
+	)
+
+	h.logger.Info("Cancel upload session requested", zap.String("upload_id", uploadID), zap.String("trace_id", traceID))
 	var req dto.CancelUploadRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		h.logger.Error("Failed to bind request body", zap.Error(err), zap.String("trace_id", traceID(ctx)))
+		h.logger.Error("Failed to bind request body", zap.Error(err), zap.String("trace_id", traceID))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to bind request body")
 		ctx.JSON(400, dto.ErrorResponse{
 			Error: dto.ErrorPayload{
 				Code:      dto.ErrorCodeInvalidArgument,
 				Message:   "Invalid request body",
-				RequestID: traceID(ctx),
+				RequestID: traceID,
 			},
 		})
 		return
 	}
 
-	response, err := h.service.CancelUploadSession(ctx.Request.Context(), ctx.Param("uploadId"), req)
+	response, err := h.service.CancelUploadSession(svcCtx, uploadID, req)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to cancel upload session")
 		h.respondWithServiceError(ctx, err, "Failed to cancel upload session")
 		return
 	}
+
+	span.SetStatus(codes.Ok, "Upload session cancelled successfully")
 	ctx.JSON(200, response)
 }
 
 func (h *UploadHandler) respondWithServiceError(ctx *gin.Context, err error, message string) {
-	requestID := traceID(ctx)
+	traceID := pkgtrace.TraceIDFromContext(ctx.Request.Context())
+	requestID := traceID
+	// Attach error details to the current span if present
+	span := otrace.SpanFromContext(ctx.Request.Context())
+	if span != nil && span.IsRecording() {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, message)
+	}
 	if errors.Is(err, internalerrors.ErrInvalidInput) {
 		ctx.JSON(400, dto.ErrorResponse{
 			Error: dto.ErrorPayload{Code: dto.ErrorCodeInvalidArgument, Message: message, RequestID: requestID},
@@ -265,13 +367,4 @@ func (h *UploadHandler) respondWithServiceError(ctx *gin.Context, err error, mes
 	ctx.JSON(500, dto.ErrorResponse{
 		Error: dto.ErrorPayload{Code: dto.ErrorCodeInternal, Message: message, RequestID: requestID},
 	})
-}
-
-func traceID(ctx *gin.Context) string {
-	if value, ok := ctx.Get(middleware.TraceIDKey); ok {
-		if id, ok := value.(string); ok {
-			return id
-		}
-	}
-	return ""
 }

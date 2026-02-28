@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 
 	"github.com/AmithSAI007/prj-apex-upload-platform/api"
@@ -27,6 +28,8 @@ import (
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 )
 
@@ -46,11 +49,21 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	otelShutdown, err := config.InitTracer(cfg, ctx)
+	if err != nil {
+		logger.Fatal("Failed to initialize tracer", zap.Error(err))
+	}
+	defer func() {
+		err = errors.Join(err, otelShutdown(ctx))
+	}()
+
+	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-upload-platform")
+
 	validate := validator.New()
 	if cfg.GCPProjectID == "" {
 		logger.Fatal("Missing GCP project ID")
 	}
-	gcsClient, err := storage.NewGCSClient(ctx)
+	gcsClient, err := storage.NewGCSClient(ctx, tracer)
 	if err != nil {
 		logger.Fatal("Failed to initialize GCS client", zap.Error(err))
 	}
@@ -68,15 +81,15 @@ func main() {
 	}
 	defer secretClient.Close()
 
-	store := service.NewFirestoreUploadSessionStore(firestoreClient.Client())
+	store := service.NewFirestoreUploadSessionStore(firestoreClient.Client(), logger, tracer)
 	keyService := service.NewSMKeyService(logger, secretClient)
 	publicKey, err := keyService.LoadKey(ctx, cfg.JWT_PUBLIC_KEY_PATH)
 	if err != nil {
 		logger.Fatal("Failed to load JWT keys", zap.Error(err))
 	}
 	tokenService := service.NewTokenService(logger, cfg, publicKey)
-	uploadService := service.NewUploadService(logger, gcsClient, cfg, store)
-	authMiddleware := middleware.NewAuthMiddleware(logger, tokenService)
+	uploadService := service.NewUploadService(logger, gcsClient, cfg, store, tracer)
+	authMiddleware := middleware.NewAuthMiddleware(logger, tokenService, tracer)
 
 	uploadHandler := handler.NewUploadHandler(logger, validate, uploadService)
 
@@ -85,6 +98,7 @@ func main() {
 	router.Use(middleware.RequestContext())
 	router.Use(middleware.ErrorHandler(logger))
 	router.Use(middleware.PrometheusMetrics())
+	router.Use(otelgin.Middleware(cfg.OTEL_SERVICE_NAME))
 
 	handlers := &api.HandlerRegistry{
 		Upload: uploadHandler,

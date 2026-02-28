@@ -14,6 +14,7 @@ type FirestoreClient struct {
 
 // NewFirestoreClient initializes a Firestore client for the project.
 func NewFirestoreClient(ctx context.Context, projectID string, databaseID string) (*FirestoreClient, error) {
+
 	if databaseID == "" {
 		return nil, fmt.Errorf("databaseID cannot be empty")
 	}
