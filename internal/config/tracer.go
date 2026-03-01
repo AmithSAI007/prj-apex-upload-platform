@@ -82,10 +82,13 @@ func InitTracer(cfg *Config, ctx context.Context) (func(context.Context) error, 
 		resource.WithDetectors(gcp.NewDetector()),
 		resource.WithAttributes(
 			attribute.String("service.name", serviceName),
-			attribute.String("telemetry.sdk.language", "go"),
 			attribute.String("gcp.project.id", cfg.GCPProjectID),
 		),
 	)
+	if err != nil {
+		handleErr(err)
+		return shutdown, err
+	}
 
 	// Create and register the global TracerProvider.
 	// AlwaysSample is used here; in production, consider a ratio-based sampler.
