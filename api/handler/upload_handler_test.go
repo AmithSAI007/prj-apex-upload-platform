@@ -15,11 +15,16 @@ import (
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.uber.org/zap"
 )
 
 type stubUploadService struct {
-	createFn func(req dto.CreateUploadRequest) (dto.CreateUploadResponse, error)
+	createFn      func(req dto.CreateUploadRequest) (dto.CreateUploadResponse, error)
+	resumeFn      func(uploadID string) (dto.ResumeUploadResponse, error)
+	getStatusFn   func(uploadID string) (dto.UploadStatusResponse, error)
+	queryStatusFn func(uploadID string, req dto.QueryStatusRequest) (dto.QueryStatusResponse, error)
+	cancelFn      func(uploadID string, req dto.CancelUploadRequest) (dto.CancelUploadResponse, error)
 }
 
 func (s *stubUploadService) CreateUploadSession(_ context.Context, req dto.CreateUploadRequest) (dto.CreateUploadResponse, error) {
@@ -29,20 +34,32 @@ func (s *stubUploadService) CreateUploadSession(_ context.Context, req dto.Creat
 	return s.createFn(req)
 }
 
-func (s *stubUploadService) ResumeUploadSession(_ context.Context, _ string) (dto.ResumeUploadResponse, error) {
-	return dto.ResumeUploadResponse{}, nil
+func (s *stubUploadService) ResumeUploadSession(_ context.Context, uploadID string) (dto.ResumeUploadResponse, error) {
+	if s.resumeFn == nil {
+		return dto.ResumeUploadResponse{}, nil
+	}
+	return s.resumeFn(uploadID)
 }
 
-func (s *stubUploadService) GetUploadStatus(_ context.Context, _ string) (dto.UploadStatusResponse, error) {
-	return dto.UploadStatusResponse{}, nil
+func (s *stubUploadService) GetUploadStatus(_ context.Context, uploadID string) (dto.UploadStatusResponse, error) {
+	if s.getStatusFn == nil {
+		return dto.UploadStatusResponse{}, nil
+	}
+	return s.getStatusFn(uploadID)
 }
 
-func (s *stubUploadService) QueryUploadStatus(_ context.Context, _ string, _ dto.QueryStatusRequest) (dto.QueryStatusResponse, error) {
-	return dto.QueryStatusResponse{}, nil
+func (s *stubUploadService) QueryUploadStatus(_ context.Context, uploadID string, req dto.QueryStatusRequest) (dto.QueryStatusResponse, error) {
+	if s.queryStatusFn == nil {
+		return dto.QueryStatusResponse{}, nil
+	}
+	return s.queryStatusFn(uploadID, req)
 }
 
-func (s *stubUploadService) CancelUploadSession(_ context.Context, _ string, _ dto.CancelUploadRequest) (dto.CancelUploadResponse, error) {
-	return dto.CancelUploadResponse{}, nil
+func (s *stubUploadService) CancelUploadSession(_ context.Context, uploadID string, req dto.CancelUploadRequest) (dto.CancelUploadResponse, error) {
+	if s.cancelFn == nil {
+		return dto.CancelUploadResponse{}, nil
+	}
+	return s.cancelFn(uploadID, req)
 }
 
 func TestCreateUploadSession_InvalidJSON(t *testing.T) {
@@ -285,6 +302,270 @@ func TestUploadEndpoints_BasicSuccess(t *testing.T) {
 	}
 }
 
+// --- Resume endpoint tests ---
+
+func TestResume_NotFound(t *testing.T) {
+	svc := &stubUploadService{
+		resumeFn: func(_ string) (dto.ResumeUploadResponse, error) {
+			return dto.ResumeUploadResponse{}, internalerrors.ErrNotFound
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/resume", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.Code)
+	}
+}
+
+func TestResume_Expired(t *testing.T) {
+	svc := &stubUploadService{
+		resumeFn: func(_ string) (dto.ResumeUploadResponse, error) {
+			return dto.ResumeUploadResponse{}, internalerrors.ErrSessionExpired
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/resume", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusGone {
+		t.Fatalf("expected 410, got %d", resp.Code)
+	}
+}
+
+func TestResume_InternalError(t *testing.T) {
+	svc := &stubUploadService{
+		resumeFn: func(_ string) (dto.ResumeUploadResponse, error) {
+			return dto.ResumeUploadResponse{}, errors.New("db error")
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/resume", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", resp.Code)
+	}
+}
+
+// --- GetStatus endpoint tests ---
+
+func TestGetStatus_NotFound(t *testing.T) {
+	svc := &stubUploadService{
+		getStatusFn: func(_ string) (dto.UploadStatusResponse, error) {
+			return dto.UploadStatusResponse{}, internalerrors.ErrNotFound
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/uploads/upl_123", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.Code)
+	}
+}
+
+func TestGetStatus_Expired(t *testing.T) {
+	svc := &stubUploadService{
+		getStatusFn: func(_ string) (dto.UploadStatusResponse, error) {
+			return dto.UploadStatusResponse{}, internalerrors.ErrSessionExpired
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/uploads/upl_123", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusGone {
+		t.Fatalf("expected 410, got %d", resp.Code)
+	}
+}
+
+func TestGetStatus_InternalError(t *testing.T) {
+	svc := &stubUploadService{
+		getStatusFn: func(_ string) (dto.UploadStatusResponse, error) {
+			return dto.UploadStatusResponse{}, errors.New("db error")
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/uploads/upl_123", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", resp.Code)
+	}
+}
+
+// --- QueryStatus endpoint tests ---
+
+func TestQueryStatus_InvalidJSON(t *testing.T) {
+	router := setupTestRouter(&stubUploadService{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/status", bytes.NewBufferString("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.Code)
+	}
+}
+
+func TestQueryStatus_NotFound(t *testing.T) {
+	svc := &stubUploadService{
+		queryStatusFn: func(_ string, _ dto.QueryStatusRequest) (dto.QueryStatusResponse, error) {
+			return dto.QueryStatusResponse{}, internalerrors.ErrNotFound
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/status", bytes.NewBufferString("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.Code)
+	}
+}
+
+func TestQueryStatus_Expired(t *testing.T) {
+	svc := &stubUploadService{
+		queryStatusFn: func(_ string, _ dto.QueryStatusRequest) (dto.QueryStatusResponse, error) {
+			return dto.QueryStatusResponse{}, internalerrors.ErrSessionExpired
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/status", bytes.NewBufferString("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusGone {
+		t.Fatalf("expected 410, got %d", resp.Code)
+	}
+}
+
+func TestQueryStatus_InternalError(t *testing.T) {
+	svc := &stubUploadService{
+		queryStatusFn: func(_ string, _ dto.QueryStatusRequest) (dto.QueryStatusResponse, error) {
+			return dto.QueryStatusResponse{}, errors.New("db error")
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/status", bytes.NewBufferString("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", resp.Code)
+	}
+}
+
+func TestQueryStatus_InvalidInput(t *testing.T) {
+	svc := &stubUploadService{
+		queryStatusFn: func(_ string, _ dto.QueryStatusRequest) (dto.QueryStatusResponse, error) {
+			return dto.QueryStatusResponse{}, internalerrors.ErrInvalidInput
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/status", bytes.NewBufferString("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.Code)
+	}
+}
+
+// --- Cancel endpoint tests ---
+
+func TestCancel_InvalidJSON(t *testing.T) {
+	router := setupTestRouter(&stubUploadService{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/cancel", bytes.NewBufferString("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.Code)
+	}
+}
+
+func TestCancel_NotFound(t *testing.T) {
+	svc := &stubUploadService{
+		cancelFn: func(_ string, _ dto.CancelUploadRequest) (dto.CancelUploadResponse, error) {
+			return dto.CancelUploadResponse{}, internalerrors.ErrNotFound
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/cancel", bytes.NewBufferString("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.Code)
+	}
+}
+
+func TestCancel_Expired(t *testing.T) {
+	svc := &stubUploadService{
+		cancelFn: func(_ string, _ dto.CancelUploadRequest) (dto.CancelUploadResponse, error) {
+			return dto.CancelUploadResponse{}, internalerrors.ErrSessionExpired
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/cancel", bytes.NewBufferString("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusGone {
+		t.Fatalf("expected 410, got %d", resp.Code)
+	}
+}
+
+func TestCancel_InternalError(t *testing.T) {
+	svc := &stubUploadService{
+		cancelFn: func(_ string, _ dto.CancelUploadRequest) (dto.CancelUploadResponse, error) {
+			return dto.CancelUploadResponse{}, errors.New("db error")
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/cancel", bytes.NewBufferString("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", resp.Code)
+	}
+}
+
+func TestCancel_InvalidInput(t *testing.T) {
+	svc := &stubUploadService{
+		cancelFn: func(_ string, _ dto.CancelUploadRequest) (dto.CancelUploadResponse, error) {
+			return dto.CancelUploadResponse{}, internalerrors.ErrInvalidInput
+		},
+	}
+	router := setupTestRouter(svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/cancel", bytes.NewBufferString("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.Code)
+	}
+}
+
 func setupTestRouter(svc service.UploadInterface) *gin.Engine {
 	logger := zap.NewNop()
 	validate := validator.New()
@@ -298,4 +579,71 @@ func setupTestRouter(svc service.UploadInterface) *gin.Engine {
 	router.POST("/api/v1/uploads/:uploadId/status", uploadHandler.QueryStatus)
 	router.POST("/api/v1/uploads/:uploadId/cancel", uploadHandler.Cancel)
 	return router
+}
+
+// setupTestRouterWithTracing returns a gin.Engine that injects a real
+// recording OTel span into every request context, so the
+// respondWithServiceError span branch is exercised.
+func setupTestRouterWithTracing(svc service.UploadInterface) *gin.Engine {
+	logger := zap.NewNop()
+	validate := validator.New()
+	uploadHandler := NewUploadHandler(logger, validate, svc)
+
+	tp := sdktrace.NewTracerProvider()
+	tracer := tp.Tracer("test")
+
+	router := gin.New()
+	router.Use(middleware.RequestContext())
+	// Inject a recording span before every handler.
+	router.Use(func(c *gin.Context) {
+		ctx, span := tracer.Start(c.Request.Context(), "test-span")
+		defer span.End()
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	})
+	router.POST("/api/v1/uploads", uploadHandler.Create)
+	router.POST("/api/v1/uploads/:uploadId/resume", uploadHandler.Resume)
+	router.GET("/api/v1/uploads/:uploadId", uploadHandler.GetStatus)
+	router.POST("/api/v1/uploads/:uploadId/status", uploadHandler.QueryStatus)
+	router.POST("/api/v1/uploads/:uploadId/cancel", uploadHandler.Cancel)
+	return router
+}
+
+// TestRespondWithServiceError_WithRecordingSpan verifies that when a service
+// error occurs with a recording span in context, the span records the error
+// and sets an error status.
+func TestRespondWithServiceError_WithRecordingSpan(t *testing.T) {
+	svc := &stubUploadService{
+		resumeFn: func(_ string) (dto.ResumeUploadResponse, error) {
+			return dto.ResumeUploadResponse{}, internalerrors.ErrNotFound
+		},
+	}
+	router := setupTestRouterWithTracing(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/resume", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.Code)
+	}
+}
+
+// TestRespondWithServiceError_InternalError_WithSpan covers the internal
+// error path with a recording span active.
+func TestRespondWithServiceError_InternalError_WithSpan(t *testing.T) {
+	svc := &stubUploadService{
+		resumeFn: func(_ string) (dto.ResumeUploadResponse, error) {
+			return dto.ResumeUploadResponse{}, errors.New("unexpected failure")
+		},
+	}
+	router := setupTestRouterWithTracing(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/upl_123/resume", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", resp.Code)
+	}
 }

@@ -8,38 +8,36 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+// NewLogger creates a configured zap.Logger based on the APP_ENV environment
+// variable. In "production" mode it outputs structured JSON to stdout and a
+// file. In all other modes it outputs colorized, human-readable console logs
+// at Info level and above.
 func NewLogger() (*zap.Logger, error) {
 	var logger *zap.Logger
 	var err error
 
-	// Check for an environment variable to determine the logging style.
 	if os.Getenv("APP_ENV") == "production" {
-		// Production Logger: JSON format, logs to stdout and a file.
+		// Production: structured JSON format, writing to both stdout and app.log.
 		cfg := zap.NewProductionConfig()
 		cfg.OutputPaths = []string{"stdout", "app.log"}
 		cfg.ErrorOutputPaths = []string{"stderr", "app.log"}
 		logger, err = cfg.Build()
 	} else {
-		// Development Logger: Human-readable, colorized console output.
+		// Development: colorized console output with RFC3339 timestamps for readability.
 		config := zap.NewDevelopmentEncoderConfig()
-
-		// Customize the encoder for better readability.
-		config.EncodeTime = zapcore.TimeEncoderOfLayout(time.RFC3339) // e.g., 2024-01-02T15:04:05Z07:00
-		config.EncodeLevel = zapcore.CapitalColorLevelEncoder         // e.g., INFO, WARN, ERROR (with colors).
+		config.EncodeTime = zapcore.TimeEncoderOfLayout(time.RFC3339)
+		config.EncodeLevel = zapcore.CapitalColorLevelEncoder
 
 		logger = zap.New(zapcore.NewCore(
-			zapcore.NewConsoleEncoder(config),                       // Use the console encoder.
-			zapcore.NewMultiWriteSyncer(zapcore.AddSync(os.Stdout)), // Write to standard out.
-			zap.InfoLevel, // Log all levels from Info and above.
+			zapcore.NewConsoleEncoder(config),
+			zapcore.NewMultiWriteSyncer(zapcore.AddSync(os.Stdout)),
+			zap.InfoLevel,
 		))
 	}
 
 	if err != nil {
 		return nil, err
 	}
-
-	// Make this logger globally accessible in your application, if needed.
-	// zap.ReplaceGlobals(logger)
 
 	return logger, nil
 }

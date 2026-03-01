@@ -34,21 +34,24 @@ import (
 )
 
 func main() {
-
+	// Load application configuration from environment variables and .env files.
 	cfg, err := config.LoadConfig(".")
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
+	// Initialize the structured logger (JSON in production, console in development).
 	logger, err := config.NewLogger()
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
 	defer logger.Sync()
 
+	// Create a root context for the application lifecycle.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Set up the OpenTelemetry tracing pipeline (OTLP exporter, sampler, propagators).
 	otelShutdown, err := config.InitTracer(cfg, ctx)
 	if err != nil {
 		logger.Fatal("Failed to initialize tracer", zap.Error(err))
@@ -57,30 +60,37 @@ func main() {
 		err = errors.Join(err, otelShutdown(ctx))
 	}()
 
+	// Create a named tracer for this application's spans.
 	tracer := otel.Tracer("github.com/AmithSAI007/prj-apex-upload-platform")
 
+	// Initialize the request validator for DTO struct validation.
 	validate := validator.New()
 	if cfg.GCPProjectID == "" {
 		logger.Fatal("Missing GCP project ID")
 	}
+
+	// Initialize the GCS client for generating signed upload URLs.
 	gcsClient, err := storage.NewGCSClient(ctx, tracer)
 	if err != nil {
 		logger.Fatal("Failed to initialize GCS client", zap.Error(err))
 	}
 	defer gcsClient.Close()
 
+	// Initialize the Firestore client for session persistence.
 	firestoreClient, err := storage.NewFirestoreClient(ctx, cfg.GCPProjectID, cfg.FirestoreDatabaseID)
 	if err != nil {
 		logger.Fatal("Failed to initialize Firestore client", zap.Error(err))
 	}
 	defer firestoreClient.Close()
 
+	// Initialize the Secret Manager client for loading JWT public keys.
 	secretClient, err := secrets.NewSecretsClient(ctx, logger)
 	if err != nil {
 		logger.Fatal("Failed to initialize Secret Manager client", zap.Error(err))
 	}
 	defer secretClient.Close()
 
+	// Wire up the service layer: session store, key service, token service, upload service.
 	store := service.NewFirestoreUploadSessionStore(firestoreClient.Client(), logger, tracer)
 	keyService := service.NewSMKeyService(logger, secretClient)
 	publicKey, err := keyService.LoadKey(ctx, cfg.JWT_PUBLIC_KEY_PATH)
@@ -91,15 +101,19 @@ func main() {
 	uploadService := service.NewUploadService(logger, gcsClient, cfg, store, tracer)
 	authMiddleware := middleware.NewAuthMiddleware(logger, tokenService, tracer)
 
+	// Create the HTTP handler with the upload service.
 	uploadHandler := handler.NewUploadHandler(logger, validate, uploadService)
 
+	// Configure the Gin router with middleware stack.
 	router := gin.New()
-	router.Use(gin.Recovery())
-	router.Use(middleware.RequestContext())
-	router.Use(middleware.ErrorHandler(logger))
-	router.Use(middleware.PrometheusMetrics())
-	router.Use(otelgin.Middleware(cfg.OTEL_SERVICE_NAME))
+	gin.SetMode(gin.ReleaseMode)
+	router.Use(gin.Recovery())                            // Recover from panics and return 500.
+	router.Use(middleware.RequestContext())               // Inject trace/request IDs.
+	router.Use(middleware.ErrorHandler(logger))           // Log unhandled errors.
+	router.Use(middleware.PrometheusMetrics())            // Record request metrics.
+	router.Use(otelgin.Middleware(cfg.OTEL_SERVICE_NAME)) // OTel HTTP instrumentation.
 
+	// Register all API routes.
 	handlers := &api.HandlerRegistry{
 		Upload: uploadHandler,
 		Auth:   authMiddleware,
@@ -107,6 +121,7 @@ func main() {
 
 	api.SetupRoutes(router, handlers)
 
+	// Start the HTTP server on port 8080.
 	logger.Info("Server starting on port 8080...")
 	if err := router.Run(":8080"); err != nil {
 		logger.Error(err.Error())

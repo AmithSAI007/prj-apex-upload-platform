@@ -16,11 +16,22 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 )
 
+// InitTracer sets up the OpenTelemetry tracing pipeline for the application.
+// It configures:
+//   - W3C TraceContext and Baggage propagators for distributed tracing.
+//   - An OTLP gRPC exporter authenticated with GCP Application Default Credentials.
+//   - A TracerProvider with AlwaysSample sampler and batch span export.
+//   - Resource attributes including service name, SDK language, and GCP project.
+//
+// Returns a shutdown function that must be called during application teardown
+// to flush buffered spans. Returns an error if the exporter or credentials
+// cannot be initialized.
 func InitTracer(cfg *Config, ctx context.Context) (func(context.Context) error, error) {
 
 	var shutdownFuncs []func(context.Context) error
 	var err error
 
+	// shutdown calls all registered cleanup functions and aggregates errors.
 	shutdown := func(ctx context.Context) error {
 		var err error
 		for _, fn := range shutdownFuncs {
@@ -30,26 +41,30 @@ func InitTracer(cfg *Config, ctx context.Context) (func(context.Context) error, 
 		return err
 	}
 
+	// handleErr is a convenience wrapper that joins the new error with shutdown cleanup.
 	handleErr := func(inErr error) {
 		err = errors.Join(inErr, shutdown(ctx))
 	}
 
 	serviceName := cfg.OTEL_SERVICE_NAME
 
+	// Configure composite propagator: W3C TraceContext for span context propagation
+	// and Baggage for forwarding custom key-value pairs across service boundaries.
 	prop := propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{}, // W3C Trace Context for distributed tracing
-		propagation.Baggage{},      // OpenTelemetry Baggage for custom key-value pairs
+		propagation.TraceContext{},
+		propagation.Baggage{},
 	)
 
 	otel.SetTextMapPropagator(prop)
 
+	// Obtain GCP Application Default Credentials for authenticating the OTLP exporter.
 	creds, err := oauth.NewApplicationDefault(ctx)
 	if err != nil {
 		handleErr(err)
 		return shutdown, err
 	}
 
-	// Create OTLP trace exporter to send spans to collector
+	// Create the OTLP gRPC trace exporter that ships spans to the configured collector.
 	exporter, err := otlptracegrpc.New(
 		ctx,
 		otlptracegrpc.WithDialOption(grpc.WithPerRPCCredentials(creds)))
@@ -59,24 +74,27 @@ func InitTracer(cfg *Config, ctx context.Context) (func(context.Context) error, 
 		return shutdown, err
 	}
 
+	// Build the resource that identifies this service in the telemetry backend.
+	// Includes automatic GCP metadata detection (project, zone, instance).
 	resources, err := resource.New(
 		context.Background(),
 		resource.WithTelemetrySDK(),
 		resource.WithDetectors(gcp.NewDetector()),
 		resource.WithAttributes(
-			attribute.String("service.name", serviceName),        // logical service name
-			attribute.String("telemetry.sdk.language", "go"),     // programming language
-			attribute.String("gcp.project.id", cfg.GCPProjectID), // GCP project ID
+			attribute.String("service.name", serviceName),
+			attribute.String("telemetry.sdk.language", "go"),
+			attribute.String("gcp.project.id", cfg.GCPProjectID),
 		),
 	)
 
+	// Create and register the global TracerProvider.
+	// AlwaysSample is used here; in production, consider a ratio-based sampler.
 	tp := trace.NewTracerProvider(
-		trace.WithSampler(trace.AlwaysSample()), // Sample all traces for demonstration; adjust in production
+		trace.WithSampler(trace.AlwaysSample()),
 		trace.WithBatcher(exporter), trace.WithResource(resources))
 
 	shutdownFuncs = append(shutdownFuncs, tp.Shutdown)
 	otel.SetTracerProvider(tp)
 
-	// Return shutdown function to flush remaining traces on exit
 	return shutdown, err
 }

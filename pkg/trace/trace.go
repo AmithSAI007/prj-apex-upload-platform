@@ -1,3 +1,7 @@
+// Package trace provides application-level trace ID generation and context
+// propagation utilities. These trace IDs are separate from OpenTelemetry's
+// distributed trace IDs and serve as human-readable correlation identifiers
+// in logs and API error responses.
 package trace
 
 import (
@@ -8,7 +12,9 @@ import (
 	"github.com/AmithSAI007/prj-apex-upload-platform/pkg/constants"
 )
 
-// GenerateTraceID returns a cryptographically-random trace id.
+// GenerateTraceID returns a cryptographically-random 16-character hex string
+// suitable for use as a request correlation ID. Falls back to a zero-filled
+// string if the system's random source is unavailable.
 func GenerateTraceID() string {
 	buffer := make([]byte, 8)
 	if _, err := rand.Read(buffer); err != nil {
@@ -17,12 +23,14 @@ func GenerateTraceID() string {
 	return hex.EncodeToString(buffer)
 }
 
-// ContextWithTraceID stores the trace id in the provided context and returns a new context.
+// ContextWithTraceID stores the given trace ID in the provided context under
+// the CtxTraceIDKey and returns a new child context.
 func ContextWithTraceID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, constants.CtxTraceIDKey, id)
 }
 
-// TraceIDFromContext returns the trace ID stored in a context.
+// TraceIDFromContext extracts the application-level trace ID from a context.
+// Returns an empty string if the context is nil or does not contain a trace ID.
 func TraceIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
@@ -35,6 +43,10 @@ func TraceIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// DataFromContext is a generic helper that extracts a string value from the
+// context for the given key. It is used to retrieve user_id, tenant_id, and
+// other request-scoped strings. Returns an empty string if the key is absent
+// or the value is not a string.
 func DataFromContext(ctx context.Context, key string) string {
 	if ctx == nil {
 		return ""

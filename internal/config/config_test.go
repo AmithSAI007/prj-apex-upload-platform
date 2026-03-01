@@ -2,7 +2,10 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
+
+	"github.com/spf13/viper"
 )
 
 func TestLoadConfig_Defaults(t *testing.T) {
@@ -53,4 +56,54 @@ func clearEnv(t *testing.T, keys ...string) {
 			t.Fatalf("failed to clear env: %v", err)
 		}
 	}
+}
+
+func TestLoadConfig_MalformedYAML(t *testing.T) {
+	// Reset Viper global state so prior tests don't interfere.
+	viper.Reset()
+
+	// Create a temp directory with a malformed config.yaml.
+	tmpDir := t.TempDir()
+	malformed := []byte("{{{invalid yaml content")
+	if err := os.WriteFile(tmpDir+"/config.yaml", malformed, 0644); err != nil {
+		t.Fatalf("failed to write malformed config: %v", err)
+	}
+
+	cfg, err := LoadConfig(tmpDir)
+	if err == nil {
+		t.Fatalf("expected error for malformed YAML, got config: %+v", cfg)
+	}
+	if !strings.Contains(err.Error(), "fatal error config file") {
+		t.Fatalf("expected 'fatal error config file' in error, got: %v", err)
+	}
+}
+
+func TestNewLogger_Development(t *testing.T) {
+	clearEnv(t, "APP_ENV")
+	logger, err := NewLogger()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if logger == nil {
+		t.Fatal("expected non-nil logger")
+	}
+	// Verify logger can write without panicking.
+	logger.Info("test log in development mode")
+}
+
+func TestNewLogger_Production(t *testing.T) {
+	setEnv(t, "APP_ENV", "production")
+	defer clearEnv(t, "APP_ENV")
+	// Remove any leftover app.log from a previous test run.
+	os.Remove("app.log")
+	defer os.Remove("app.log")
+
+	logger, err := NewLogger()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if logger == nil {
+		t.Fatal("expected non-nil logger")
+	}
+	logger.Info("test log in production mode")
 }

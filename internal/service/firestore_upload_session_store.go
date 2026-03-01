@@ -18,6 +18,7 @@ import (
 	otCodes "go.opentelemetry.io/otel/codes"
 )
 
+// uploadSessionsCollection is the Firestore collection name for upload session documents.
 const uploadSessionsCollection = "upload_sessions"
 
 // FirestoreUploadSessionStore stores upload sessions in Firestore.
@@ -36,6 +37,8 @@ func NewFirestoreUploadSessionStore(client *firestore.Client, logger *zap.Logger
 	}
 }
 
+// Create persists a new upload session document in Firestore. The document ID
+// is set to session.UploadID for deterministic lookups.
 func (s *FirestoreUploadSessionStore) Create(ctx context.Context, session *model.UploadSession) error {
 	if session == nil {
 		return errors.New("session is required")
@@ -73,6 +76,8 @@ func (s *FirestoreUploadSessionStore) Create(ctx context.Context, session *model
 	return err
 }
 
+// GetByID retrieves an upload session by its document ID (uploadID).
+// Returns (nil, ErrNotFound) if the document does not exist in Firestore.
 func (s *FirestoreUploadSessionStore) GetByID(ctx context.Context, uploadID string) (*model.UploadSession, error) {
 	ctx, span := s.tracer.Start(ctx, "GetUploadSessionByID")
 	span.SetAttributes(
@@ -105,6 +110,9 @@ func (s *FirestoreUploadSessionStore) GetByID(ctx context.Context, uploadID stri
 	return &session, nil
 }
 
+// GetByIdempotencyKey queries for an existing session matching the given
+// tenant, user, and idempotency key combination. Returns (nil, nil) if no
+// matching session is found.
 func (s *FirestoreUploadSessionStore) GetByIdempotencyKey(ctx context.Context, tenantID string, userID string, idempotencyKey string) (*model.UploadSession, error) {
 	if idempotencyKey == "" {
 		return nil, nil
@@ -169,6 +177,8 @@ func (s *FirestoreUploadSessionStore) GetByIdempotencyKey(ctx context.Context, t
 	return &session, nil
 }
 
+// UpdateStatus patches the session's status and uploaded byte count. Also
+// bumps the updatedAt timestamp.
 func (s *FirestoreUploadSessionStore) UpdateStatus(ctx context.Context, uploadID string, status model.UploadStatus, uploadedBytes int64) error {
 	ctx, span := s.tracer.Start(ctx, "UpdateUploadStatus")
 	span.SetAttributes(
@@ -192,6 +202,7 @@ func (s *FirestoreUploadSessionStore) UpdateStatus(ctx context.Context, uploadID
 	return err
 }
 
+// UpdateGCSUploadURL replaces the stored GCS upload URL for the session.
 func (s *FirestoreUploadSessionStore) UpdateGCSUploadURL(ctx context.Context, uploadID string, gcsUploadURL string) error {
 	ctx, span := s.tracer.Start(ctx, "UpdateGCSUploadURL")
 	span.SetAttributes(
@@ -214,6 +225,8 @@ func (s *FirestoreUploadSessionStore) UpdateGCSUploadURL(ctx context.Context, up
 	return err
 }
 
+// MarkCompleted transitions the session to "completed" and records the final
+// uploaded byte count.
 func (s *FirestoreUploadSessionStore) MarkCompleted(ctx context.Context, uploadID string, uploadedBytes int64) error {
 	ctx, span := s.tracer.Start(ctx, "MarkUploadCompleted")
 	span.SetAttributes(
@@ -237,6 +250,7 @@ func (s *FirestoreUploadSessionStore) MarkCompleted(ctx context.Context, uploadI
 	return err
 }
 
+// MarkCancelled transitions the session to "cancelled".
 func (s *FirestoreUploadSessionStore) MarkCancelled(ctx context.Context, uploadID string) error {
 	ctx, span := s.tracer.Start(ctx, "MarkUploadCancelled")
 	span.SetAttributes(
@@ -259,6 +273,7 @@ func (s *FirestoreUploadSessionStore) MarkCancelled(ctx context.Context, uploadI
 	return err
 }
 
+// MarkExpired transitions the session to "expired" when its TTL has elapsed.
 func (s *FirestoreUploadSessionStore) MarkExpired(ctx context.Context, uploadID string) error {
 	ctx, span := s.tracer.Start(ctx, "MarkUploadExpired")
 	span.SetAttributes(

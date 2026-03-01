@@ -55,8 +55,13 @@ func NewUploadService(logger *zap.Logger, gcsClient storage.SignedURLClient, cfg
 }
 
 // CreateUploadSession creates a new resumable upload session and persists it.
+// It performs idempotency-key deduplication, signs a GCS resumable upload URL,
+// builds the session model, and stores it in Firestore. Returns the signed URL
+// and session metadata so the client can begin uploading directly to GCS.
 func (s *UploadService) CreateUploadSession(ctx context.Context, req dto.CreateUploadRequest) (dto.CreateUploadResponse, error) {
 	startTime := time.Now().UTC()
+
+	// Validate required fields before starting any I/O.
 	if req.FileName == "" || req.ContentType == "" || req.SizeBytes <= 0 {
 		return dto.CreateUploadResponse{}, internalerrors.ErrInvalidInput
 	}
@@ -66,6 +71,12 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, req dto.CreateU
 
 	ctx, span := s.tracer.Start(ctx, "CreateUploadSession")
 	defer span.End()
+
+	span.AddEvent("create_session.start", trace.WithAttributes(
+		attribute.String("file_name", req.FileName),
+		attribute.String("content_type", req.ContentType),
+		attribute.Int64("size_bytes", req.SizeBytes),
+	))
 
 	bucketName := s.cfg.GCSBucket
 	if bucketName == "" {
@@ -79,8 +90,9 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, req dto.CreateU
 		return dto.CreateUploadResponse{}, errors.New("missing upload session store")
 	}
 
+	// Check for idempotency-key reuse before creating a new session.
 	if req.IdempotencyKey != "" {
-		// use incoming request context as parent so spans link to the request trace
+		// Use incoming request context as parent so spans link to the request trace.
 		rpcCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
@@ -96,17 +108,24 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, req dto.CreateU
 			return dto.CreateUploadResponse{}, fmt.Errorf("lookup idempotency key: %w", err)
 		}
 		if existing != nil {
+			// Found an existing session for this idempotency key; return it.
 			s.logger.Info("Reusing upload session for idempotency key", zap.String("upload_id", existing.UploadID))
 			idSpan.SetAttributes(attribute.String("idempotency_key", req.IdempotencyKey), attribute.String("upload_id", existing.UploadID))
 			idSpan.SetStatus(codes.Ok, "found existing upload session for idempotency key")
 			span.SetAttributes(attribute.String("idempotency_key", req.IdempotencyKey), attribute.String("upload_id", existing.UploadID))
 			span.SetStatus(codes.Ok, "reused existing upload session for idempotency key")
+			span.AddEvent("create_session.idempotency_hit", trace.WithAttributes(
+				attribute.String("upload_id", existing.UploadID),
+			))
 			return mapSessionToCreateResponse(existing), nil
 		}
 	}
 
+	// Generate a unique upload ID and build the GCS object path.
 	uploadID := generateUploadID()
 	objectName := buildObjectName(uploadID, req.FileName)
+
+	// Sign a resumable upload URL so the client can upload directly to GCS.
 	signCtx, signSpan := s.tracer.Start(ctx, "SignResumableUploadURL")
 	defer signSpan.End()
 	signSpan.SetAttributes(attribute.String("bucket", bucketName), attribute.String("object_name", objectName))
@@ -116,9 +135,13 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, req dto.CreateU
 		signSpan.SetStatus(codes.Error, "create signed resumable upload url failed")
 		span.SetAttributes(attribute.String("error", err.Error()))
 		span.SetStatus(codes.Error, "create signed resumable upload url failed")
+		span.AddEvent("create_session.sign_url_failed", trace.WithAttributes(
+			attribute.String("error", err.Error()),
+		))
 		return dto.CreateUploadResponse{}, fmt.Errorf("create signed resumable upload url: %w", err)
 	}
 
+	// Build the session model with all metadata from the request and signed URL.
 	createdAt := startTime
 	expiresAt := startTime.Add(defaultUploadTTL)
 	session := &model.UploadSession{
@@ -142,6 +165,7 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, req dto.CreateU
 		ExpiresAt:      expiresAt,
 	}
 
+	// Persist the session to Firestore so it can be resumed later.
 	persistCtx, persistSpan := s.tracer.Start(ctx, "PersistUploadSession")
 	persistSpan.SetAttributes(attribute.String("upload_id", uploadID), attribute.Int64("size_bytes", req.SizeBytes))
 	if err := s.store.Create(persistCtx, session); err != nil {
@@ -150,6 +174,9 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, req dto.CreateU
 		persistSpan.End()
 		span.SetAttributes(attribute.String("error", err.Error()))
 		span.SetStatus(codes.Error, "persist upload session failed")
+		span.AddEvent("create_session.persist_failed", trace.WithAttributes(
+			attribute.String("error", err.Error()),
+		))
 		return dto.CreateUploadResponse{}, fmt.Errorf("persist upload session: %w", err)
 	}
 	persistSpan.End()
@@ -165,6 +192,11 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, req dto.CreateU
 		attribute.String("trace_id", pkgtrace.TraceIDFromContext(ctx)),
 	)
 
+	span.AddEvent("create_session.success", trace.WithAttributes(
+		attribute.String("upload_id", uploadID),
+		attribute.String("object_name", objectName),
+	))
+
 	s.logger.Info(
 		"Created upload session",
 		zap.String("upload_id", uploadID),
@@ -176,6 +208,9 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, req dto.CreateU
 	return response, nil
 }
 
+// ResumeUploadSession retrieves an existing upload session and returns its GCS
+// upload URL so the client can continue an interrupted upload. Returns ErrNotFound
+// if the session does not exist and ErrSessionExpired if the session TTL has elapsed.
 func (s *UploadService) ResumeUploadSession(ctx context.Context, uploadID string) (dto.ResumeUploadResponse, error) {
 	if uploadID == "" {
 		return dto.ResumeUploadResponse{}, internalerrors.ErrInvalidInput
@@ -187,6 +222,10 @@ func (s *UploadService) ResumeUploadSession(ctx context.Context, uploadID string
 	ctx, span := s.tracer.Start(ctx, "ResumeUploadSession")
 	defer span.End()
 
+	span.AddEvent("resume_session.start", trace.WithAttributes(
+		attribute.String("upload_id", uploadID),
+	))
+
 	span.SetAttributes(
 		attribute.String("upload_id", uploadID),
 		attribute.String("trace_id", pkgtrace.TraceIDFromContext(ctx)),
@@ -194,7 +233,7 @@ func (s *UploadService) ResumeUploadSession(ctx context.Context, uploadID string
 		attribute.String("tenant_id", pkgtrace.DataFromContext(ctx, string(constants.CtxTenantIDKey))),
 	)
 
-	// load session
+	// Load the session from the store.
 	loadCtx, loadSpan := s.tracer.Start(ctx, "LoadUploadSession")
 	session, err := s.store.GetByID(loadCtx, uploadID)
 	if err != nil {
@@ -204,6 +243,9 @@ func (s *UploadService) ResumeUploadSession(ctx context.Context, uploadID string
 		loadSpan.End()
 		span.SetAttributes(attribute.String("error", err.Error()))
 		span.SetStatus(codes.Error, "load upload session failed")
+		span.AddEvent("resume_session.load_failed", trace.WithAttributes(
+			attribute.String("error", err.Error()),
+		))
 		return dto.ResumeUploadResponse{}, fmt.Errorf("load upload session: %w", err)
 	}
 	loadSpan.End()
@@ -212,16 +254,19 @@ func (s *UploadService) ResumeUploadSession(ctx context.Context, uploadID string
 		span.RecordError(errors.New("session not found"))
 		span.SetAttributes(attribute.String("error", "session not found"))
 		span.SetStatus(codes.Error, "session not found")
+		span.AddEvent("resume_session.not_found")
 		return dto.ResumeUploadResponse{}, internalerrors.ErrNotFound
 	}
 
+	// Check whether the session has expired past its TTL.
 	if time.Now().UTC().After(session.ExpiresAt) {
-		// mark expired
+		// Mark the session as expired in the store so future lookups see the correct state.
 		expCtx, expSpan := s.tracer.Start(ctx, "MarkExpired")
 		_ = s.store.MarkExpired(expCtx, uploadID)
 		expSpan.End()
 		span.SetAttributes(attribute.String("error", "session expired"))
 		span.SetStatus(codes.Error, "session expired")
+		span.AddEvent("resume_session.expired")
 		return dto.ResumeUploadResponse{}, internalerrors.ErrSessionExpired
 	}
 
@@ -233,10 +278,13 @@ func (s *UploadService) ResumeUploadSession(ctx context.Context, uploadID string
 	}
 
 	span.SetStatus(codes.Ok, "resumed upload session")
+	span.AddEvent("resume_session.success")
 	s.logger.Info("Resumed upload session", zap.String("upload_id", uploadID), zap.String("trace_id", pkgtrace.TraceIDFromContext(ctx)))
 	return response, nil
 }
 
+// GetUploadStatus retrieves the server-side status of an upload session from
+// Firestore. This returns cached state without querying GCS for live progress.
 func (s *UploadService) GetUploadStatus(ctx context.Context, uploadID string) (dto.UploadStatusResponse, error) {
 	if uploadID == "" {
 		return dto.UploadStatusResponse{}, internalerrors.ErrInvalidInput
@@ -247,6 +295,10 @@ func (s *UploadService) GetUploadStatus(ctx context.Context, uploadID string) (d
 
 	ctx, span := s.tracer.Start(ctx, "GetUploadStatus")
 	defer span.End()
+
+	span.AddEvent("get_status.start", trace.WithAttributes(
+		attribute.String("upload_id", uploadID),
+	))
 
 	span.SetAttributes(
 		attribute.String("upload_id", uploadID),
@@ -296,10 +348,15 @@ func (s *UploadService) GetUploadStatus(ctx context.Context, uploadID string) (d
 	}
 
 	span.SetStatus(codes.Ok, "fetched upload status")
+	span.AddEvent("get_status.success")
 	s.logger.Info("Fetched upload status", zap.String("upload_id", uploadID), zap.String("trace_id", pkgtrace.TraceIDFromContext(ctx)))
 	return response, nil
 }
 
+// QueryUploadStatus queries the current upload progress. When req.Refresh is true
+// and the session has a GCS upload URL, it sends a Content-Range status query to
+// GCS to get the actual uploaded byte count, then updates Firestore accordingly.
+// If all bytes are uploaded, the session is marked completed.
 func (s *UploadService) QueryUploadStatus(ctx context.Context, uploadID string, req dto.QueryStatusRequest) (dto.QueryStatusResponse, error) {
 	if uploadID == "" {
 		return dto.QueryStatusResponse{}, internalerrors.ErrInvalidInput
@@ -310,6 +367,11 @@ func (s *UploadService) QueryUploadStatus(ctx context.Context, uploadID string, 
 
 	ctx, span := s.tracer.Start(ctx, "QueryUploadStatus")
 	defer span.End()
+
+	span.AddEvent("query_status.start", trace.WithAttributes(
+		attribute.String("upload_id", uploadID),
+		attribute.Bool("refresh", req.Refresh),
+	))
 
 	span.SetAttributes(
 		attribute.String("upload_id", uploadID),
@@ -408,10 +470,14 @@ func (s *UploadService) QueryUploadStatus(ctx context.Context, uploadID string, 
 	}
 
 	span.SetStatus(codes.Ok, "queried upload status")
+	span.AddEvent("query_status.success")
 	s.logger.Info("Queried upload status", zap.String("upload_id", uploadID), zap.Bool("refresh", req.Refresh), zap.String("trace_id", pkgtrace.TraceIDFromContext(ctx)))
 	return response, nil
 }
 
+// CancelUploadSession marks an upload session as cancelled in Firestore.
+// Returns ErrNotFound if the session does not exist and ErrSessionExpired if
+// the session has already exceeded its TTL.
 func (s *UploadService) CancelUploadSession(ctx context.Context, uploadID string, req dto.CancelUploadRequest) (dto.CancelUploadResponse, error) {
 	if uploadID == "" {
 		return dto.CancelUploadResponse{}, internalerrors.ErrInvalidInput
@@ -422,6 +488,10 @@ func (s *UploadService) CancelUploadSession(ctx context.Context, uploadID string
 
 	ctx, span := s.tracer.Start(ctx, "CancelUploadSession")
 	defer span.End()
+
+	span.AddEvent("cancel_session.start", trace.WithAttributes(
+		attribute.String("upload_id", uploadID),
+	))
 
 	span.SetAttributes(
 		attribute.String("upload_id", uploadID),
@@ -474,12 +544,16 @@ func (s *UploadService) CancelUploadSession(ctx context.Context, uploadID string
 	}
 
 	span.SetStatus(codes.Ok, "cancelled upload session")
+	span.AddEvent("cancel_session.success")
 	s.logger.Info("Cancelled upload session", zap.String("upload_id", uploadID), zap.String("reason", req.Reason), zap.String("trace_id", pkgtrace.TraceIDFromContext(ctx)))
 	return response, nil
 }
 
+// defaultUploadTTL is the default time-to-live for upload sessions (15 minutes).
 const defaultUploadTTL = 15 * time.Minute
 
+// generateUploadID creates a unique upload session identifier using a UUIDv7.
+// Falls back to a random hex string or timestamp-based ID if UUID generation fails.
 func generateUploadID() string {
 	value, err := uuid.NewV7()
 	if err == nil {
@@ -493,6 +567,8 @@ func generateUploadID() string {
 	return "upl_" + hex.EncodeToString(buffer)
 }
 
+// buildObjectName constructs the GCS object path for an upload using the
+// format "uploads/{uploadID}/{fileName}".
 func buildObjectName(uploadID string, fileName string) string {
 	if fileName == "" {
 		return "uploads/" + uploadID
@@ -500,6 +576,7 @@ func buildObjectName(uploadID string, fileName string) string {
 	return "uploads/" + uploadID + "/" + fileName
 }
 
+// checksumAlgorithm extracts the algorithm from an optional ChecksumRequest.
 func checksumAlgorithm(req *dto.ChecksumRequest) string {
 	if req == nil {
 		return ""
@@ -507,6 +584,7 @@ func checksumAlgorithm(req *dto.ChecksumRequest) string {
 	return req.Algorithm
 }
 
+// checksumValue extracts the value from an optional ChecksumRequest.
 func checksumValue(req *dto.ChecksumRequest) string {
 	if req == nil {
 		return ""
@@ -514,6 +592,7 @@ func checksumValue(req *dto.ChecksumRequest) string {
 	return req.Value
 }
 
+// mapSessionToCreateResponse converts an UploadSession model to a CreateUploadResponse DTO.
 func mapSessionToCreateResponse(session *model.UploadSession) dto.CreateUploadResponse {
 	return dto.CreateUploadResponse{
 		UploadID:         session.UploadID,
@@ -525,6 +604,9 @@ func mapSessionToCreateResponse(session *model.UploadSession) dto.CreateUploadRe
 	}
 }
 
+// queryUploadedBytes sends a Content-Range status query to the GCS resumable
+// upload URL to determine how many bytes have been uploaded so far. Returns
+// sizeBytes if the upload is complete (HTTP 200/201/204).
 func queryUploadedBytes(ctx context.Context, uploadURL string, sizeBytes int64) (int64, error) {
 	if uploadURL == "" {
 		return 0, errors.New("missing upload url")
@@ -547,6 +629,7 @@ func queryUploadedBytes(ctx context.Context, uploadURL string, sizeBytes int64) 
 	}
 	defer resp.Body.Close()
 
+	// GCS returns 308 Permanent Redirect with a Range header during active uploads.
 	if resp.StatusCode == http.StatusPermanentRedirect || resp.StatusCode == 308 {
 		rangeHeader := resp.Header.Get("Range")
 		if rangeHeader == "" {
@@ -554,6 +637,7 @@ func queryUploadedBytes(ctx context.Context, uploadURL string, sizeBytes int64) 
 		}
 		return parseUploadedBytes(rangeHeader)
 	}
+	// HTTP 200/201/204 indicate the upload is fully complete.
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusNoContent {
 		return sizeBytes, nil
 	}
@@ -561,6 +645,8 @@ func queryUploadedBytes(ctx context.Context, uploadURL string, sizeBytes int64) 
 	return 0, fmt.Errorf("unexpected status %d", resp.StatusCode)
 }
 
+// parseUploadedBytes parses the "bytes=0-{end}" Range header returned by GCS
+// and returns end+1 (the number of bytes uploaded). Returns 0 for an empty header.
 func parseUploadedBytes(rangeHeader string) (int64, error) {
 	trimmed := strings.TrimSpace(rangeHeader)
 	if trimmed == "" {
