@@ -1,0 +1,512 @@
+basePath: /api/v1
+definitions:
+  dto.CancelUploadRequest:
+    properties:
+      reason:
+        example: user_cancelled
+        type: string
+    type: object
+  dto.CancelUploadResponse:
+    properties:
+      status:
+        allOf:
+        - $ref: '#/definitions/dto.UploadStatus'
+        example: cancelled
+      uploadId:
+        example: upl_6f1a2c9d5e7b3a1c
+        type: string
+    type: object
+  dto.ChecksumRequest:
+    properties:
+      algorithm:
+        enum:
+        - crc32c
+        - md5
+        example: crc32c
+        type: string
+      value:
+        example: 8Qm5dA==
+        type: string
+    type: object
+  dto.CreateUploadRequest:
+    properties:
+      checksum:
+        $ref: '#/definitions/dto.ChecksumRequest'
+      contentType:
+        example: application/pdf
+        type: string
+      fileName:
+        example: invoice.pdf
+        type: string
+      idempotencyKey:
+        example: 4a5c2a9f-2d7e-4ef2-b7b4-2df51b7d9a0e
+        type: string
+      labels:
+        additionalProperties:
+          type: string
+        example:
+          docType: invoice
+        type: object
+      metadata:
+        additionalProperties:
+          type: string
+        example:
+          projectId: p123
+        type: object
+      sizeBytes:
+        example: 10485760
+        type: integer
+    required:
+    - contentType
+    - fileName
+    - sizeBytes
+    type: object
+  dto.CreateUploadResponse:
+    properties:
+      bucket:
+        example: my-bucket
+        type: string
+      gcsUploadUrl:
+        example: https://storage.googleapis.com/upload/storage/v1/b/my-bucket/o?uploadType=resumable&upload_id=...
+        type: string
+      objectName:
+        example: uploads/upl_6f1a2c9d5e7b3a1c/invoice.pdf
+        type: string
+      sessionExpiresAt:
+        example: "2026-02-15T17:15:00Z"
+        type: string
+      status:
+        allOf:
+        - $ref: '#/definitions/dto.UploadStatus'
+        example: created
+      uploadId:
+        example: upl_6f1a2c9d5e7b3a1c
+        type: string
+    type: object
+  dto.ErrorDetail:
+    properties:
+      field:
+        example: fileName
+        type: string
+      message:
+        example: fileName is required
+        type: string
+    type: object
+  dto.ErrorPayload:
+    properties:
+      code:
+        example: invalid_argument
+        type: string
+      details:
+        items:
+          $ref: '#/definitions/dto.ErrorDetail'
+        type: array
+      message:
+        example: Validation failed
+        type: string
+      requestId:
+        example: req_6f1a2c9d5e7b3a1c
+        type: string
+    type: object
+  dto.ErrorResponse:
+    properties:
+      error:
+        $ref: '#/definitions/dto.ErrorPayload'
+    type: object
+  dto.QueryStatusRequest:
+    properties:
+      refresh:
+        example: true
+        type: boolean
+    type: object
+  dto.QueryStatusResponse:
+    properties:
+      status:
+        allOf:
+        - $ref: '#/definitions/dto.UploadStatus'
+        example: in_progress
+      uploadId:
+        example: upl_6f1a2c9d5e7b3a1c
+        type: string
+      uploadedBytes:
+        example: 5242880
+        type: integer
+    type: object
+  dto.ResumeUploadRequest:
+    properties:
+      idempotencyKey:
+        example: 4a5c2a9f-2d7e-4ef2-b7b4-2df51b7d9a0e
+        type: string
+    type: object
+  dto.ResumeUploadResponse:
+    properties:
+      gcsUploadUrl:
+        example: https://storage.googleapis.com/upload/storage/v1/b/my-bucket/o?uploadType=resumable&upload_id=...
+        type: string
+      sessionExpiresAt:
+        example: "2026-02-15T17:15:00Z"
+        type: string
+      status:
+        allOf:
+        - $ref: '#/definitions/dto.UploadStatus'
+        example: in_progress
+      uploadId:
+        example: upl_6f1a2c9d5e7b3a1c
+        type: string
+    type: object
+  dto.UploadStatus:
+    enum:
+    - created
+    - in_progress
+    - completed
+    - cancelled
+    - failed
+    - expired
+    type: string
+    x-enum-varnames:
+    - StatusCreated
+    - StatusInProgress
+    - StatusCompleted
+    - StatusCancelled
+    - StatusFailed
+    - StatusExpired
+  dto.UploadStatusResponse:
+    properties:
+      contentType:
+        example: application/pdf
+        type: string
+      createdAt:
+        example: "2026-02-15T17:10:00Z"
+        type: string
+      objectName:
+        example: uploads/upl_6f1a2c9d5e7b3a1c/invoice.pdf
+        type: string
+      sizeBytes:
+        example: 10485760
+        type: integer
+      status:
+        allOf:
+        - $ref: '#/definitions/dto.UploadStatus'
+        example: in_progress
+      updatedAt:
+        example: "2026-02-15T17:12:00Z"
+        type: string
+      uploadId:
+        example: upl_6f1a2c9d5e7b3a1c
+        type: string
+      uploadedBytes:
+        example: 5242880
+        type: integer
+    type: object
+info:
+  contact:
+    email: support@example.com
+    name: Platform API Support
+    url: https://example.com/support
+  description: Enterprise-grade resumable upload API for GCS.
+  license:
+    name: Proprietary
+    url: https://example.com/license
+  termsOfService: https://example.com/terms
+  title: Apex Upload Platform API
+  version: "1.0"
+paths:
+  /uploads:
+    post:
+      consumes:
+      - application/json
+      description: Create a resumable upload session and return a signed GCS upload
+        URL.
+      parameters:
+      - description: Correlation ID
+        in: header
+        name: X-Request-ID
+        type: string
+      - description: Tenant ID
+        in: header
+        name: X-Tenant-ID
+        type: string
+      - description: Create upload session
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateUploadRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/dto.CreateUploadResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create upload session
+      tags:
+      - uploads
+  /uploads/{uploadId}:
+    get:
+      description: Get server-side status for an upload session.
+      parameters:
+      - description: Correlation ID
+        in: header
+        name: X-Request-ID
+        type: string
+      - description: Tenant ID
+        in: header
+        name: X-Tenant-ID
+        type: string
+      - description: Upload ID
+        in: path
+        name: uploadId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.UploadStatusResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get upload status
+      tags:
+      - uploads
+  /uploads/{uploadId}/cancel:
+    post:
+      consumes:
+      - application/json
+      description: Cancel the upload session and delete any partial object.
+      parameters:
+      - description: Correlation ID
+        in: header
+        name: X-Request-ID
+        type: string
+      - description: Tenant ID
+        in: header
+        name: X-Tenant-ID
+        type: string
+      - description: Upload ID
+        in: path
+        name: uploadId
+        required: true
+        type: string
+      - description: Cancel upload session
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/dto.CancelUploadRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.CancelUploadResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Cancel upload session
+      tags:
+      - uploads
+  /uploads/{uploadId}/resume:
+    post:
+      consumes:
+      - application/json
+      description: Return the existing resumable upload URL for a session.
+      parameters:
+      - description: Correlation ID
+        in: header
+        name: X-Request-ID
+        type: string
+      - description: Tenant ID
+        in: header
+        name: X-Tenant-ID
+        type: string
+      - description: Upload ID
+        in: path
+        name: uploadId
+        required: true
+        type: string
+      - description: Resume upload session
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/dto.ResumeUploadRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.ResumeUploadResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Resume upload session
+      tags:
+      - uploads
+  /uploads/{uploadId}/status:
+    post:
+      consumes:
+      - application/json
+      description: Query current uploaded bytes from GCS for the session.
+      parameters:
+      - description: Correlation ID
+        in: header
+        name: X-Request-ID
+        type: string
+      - description: Tenant ID
+        in: header
+        name: X-Tenant-ID
+        type: string
+      - description: Upload ID
+        in: path
+        name: uploadId
+        required: true
+        type: string
+      - description: Query upload status
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/dto.QueryStatusRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.QueryStatusResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/dto.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Query GCS upload status
+      tags:
+      - uploads
+schemes:
+- https
+- http
+securityDefinitions:
+  BearerAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
