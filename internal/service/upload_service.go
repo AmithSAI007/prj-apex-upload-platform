@@ -627,7 +627,9 @@ func queryUploadedBytes(ctx context.Context, uploadURL string, sizeBytes int64) 
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	// GCS returns 308 Permanent Redirect with a Range header during active uploads.
 	if resp.StatusCode == http.StatusPermanentRedirect || resp.StatusCode == 308 {

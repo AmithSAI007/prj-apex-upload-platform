@@ -58,7 +58,7 @@ func (c *GCSClient) Client() *storage.Client {
 // an error if validation or signing fails.
 func (c *GCSClient) SignResumableUploadURL(ctx context.Context, bucket string, objectName string, serviceAccount string) (string, error) {
 
-	ctx, span := c.trace.Start(ctx, "SignResumableUploadURL")
+	_, span := c.trace.Start(ctx, "SignResumableUploadURL")
 	defer span.End()
 
 	span.AddEvent("sign_url.start", trace.WithAttributes(

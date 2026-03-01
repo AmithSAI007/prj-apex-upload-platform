@@ -47,7 +47,7 @@ func TraceIDFromContext(ctx context.Context) string {
 // context for the given key. It is used to retrieve user_id, tenant_id, and
 // other request-scoped strings. Returns an empty string if the key is absent
 // or the value is not a string.
-func DataFromContext(ctx context.Context, key string) string {
+func DataFromContext(ctx context.Context, key interface{}) string {
 	if ctx == nil {
 		return ""
 	}

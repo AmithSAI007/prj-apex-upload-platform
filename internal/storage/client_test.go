@@ -90,7 +90,9 @@ func TestSignResumableUploadURL_SigningFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create unauthenticated GCS client: %v", err)
 	}
-	defer client.Close()
+	defer func() {
+		_ = client.Close()
+	}()
 
 	c := &GCSClient{client: client, trace: otel.Tracer("test")}
 	_, err = c.SignResumableUploadURL(ctx, "my-bucket", "my-object", "sa@example.com")
@@ -124,7 +126,9 @@ func TestGCSClient_Client_RealClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create unauthenticated GCS client: %v", err)
 	}
-	defer client.Close()
+	defer func() {
+		_ = client.Close()
+	}()
 	c := &GCSClient{client: client, trace: otel.Tracer("test")}
 	if c.Client() == nil {
 		t.Fatal("expected non-nil inner client")

@@ -95,8 +95,10 @@ func TestNewLogger_Production(t *testing.T) {
 	setEnv(t, "APP_ENV", "production")
 	defer clearEnv(t, "APP_ENV")
 	// Remove any leftover app.log from a previous test run.
-	os.Remove("app.log")
-	defer os.Remove("app.log")
+	_ = os.Remove("app.log")
+	defer func() {
+		_ = os.Remove("app.log")
+	}()
 
 	logger, err := NewLogger()
 	if err != nil {

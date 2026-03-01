@@ -45,7 +45,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
-	defer logger.Sync()
+	defer func() {
+		_ = logger.Sync()
+	}()
 
 	// Create a root context for the application lifecycle.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,21 +76,27 @@ func main() {
 	if err != nil {
 		logger.Fatal("Failed to initialize GCS client", zap.Error(err))
 	}
-	defer gcsClient.Close()
+	defer func() {
+		_ = gcsClient.Close()
+	}()
 
 	// Initialize the Firestore client for session persistence.
 	firestoreClient, err := storage.NewFirestoreClient(ctx, cfg.GCPProjectID, cfg.FirestoreDatabaseID)
 	if err != nil {
 		logger.Fatal("Failed to initialize Firestore client", zap.Error(err))
 	}
-	defer firestoreClient.Close()
+	defer func() {
+		_ = firestoreClient.Close()
+	}()
 
 	// Initialize the Secret Manager client for loading JWT public keys.
 	secretClient, err := secrets.NewSecretsClient(ctx, logger)
 	if err != nil {
 		logger.Fatal("Failed to initialize Secret Manager client", zap.Error(err))
 	}
-	defer secretClient.Close()
+	defer func() {
+		_ = secretClient.Close()
+	}()
 
 	// Wire up the service layer: session store, key service, token service, upload service.
 	store := service.NewFirestoreUploadSessionStore(firestoreClient.Client(), logger, tracer)

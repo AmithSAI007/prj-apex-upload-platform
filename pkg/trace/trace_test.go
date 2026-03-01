@@ -68,16 +68,16 @@ func TestDataFromContext_MissingKey(t *testing.T) {
 }
 
 func TestDataFromContext_StringValue(t *testing.T) {
-	ctx := context.WithValue(context.Background(), "user_id", "u123")
-	got := DataFromContext(ctx, "user_id")
+	ctx := context.WithValue(context.Background(), constants.CtxUserIDKey, "u123")
+	got := DataFromContext(ctx, constants.CtxUserIDKey)
 	if got != "u123" {
 		t.Fatalf("expected u123, got %s", got)
 	}
 }
 
 func TestDataFromContext_NonStringValue(t *testing.T) {
-	ctx := context.WithValue(context.Background(), "count", 42)
-	got := DataFromContext(ctx, "count")
+	ctx := context.WithValue(context.Background(), constants.CtxUserIDKey, 42)
+	got := DataFromContext(ctx, constants.CtxUserIDKey)
 	if got != "" {
 		t.Fatalf("expected empty string for non-string value, got %s", got)
 	}

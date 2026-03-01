@@ -45,7 +45,9 @@ func SetupRoutes(router *gin.Engine, handlers *HandlerRegistry) {
 	router.GET("/docs/doc.json", func(ctx *gin.Context) {
 		ctx.Writer.Header().Set("Content-Type", "application/json")
 		ctx.Writer.WriteHeader(200)
-		ctx.Writer.Write([]byte(docs.SwaggerInfo.ReadDoc()))
+		if _, err := ctx.Writer.Write([]byte(docs.SwaggerInfo.ReadDoc())); err != nil {
+			ctx.AbortWithStatus(500)
+		}
 	})
 
 	// Prometheus metrics endpoint.
