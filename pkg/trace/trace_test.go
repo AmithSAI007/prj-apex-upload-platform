@@ -32,7 +32,7 @@ func TestContextWithTraceID_RoundTrip(t *testing.T) {
 }
 
 func TestTraceIDFromContext_NilContext(t *testing.T) {
-	got := TraceIDFromContext(context.TODO())
+	got := TraceIDFromContext(nil) //nolint:staticcheck // intentionally testing nil-safety
 	if got != "" {
 		t.Fatalf("expected empty string for nil context, got %s", got)
 	}
@@ -54,7 +54,7 @@ func TestTraceIDFromContext_WrongType(t *testing.T) {
 }
 
 func TestDataFromContext_NilContext(t *testing.T) {
-	got := DataFromContext(context.TODO(), "any_key")
+	got := DataFromContext(nil, "any_key") //nolint:staticcheck // intentionally testing nil-safety
 	if got != "" {
 		t.Fatalf("expected empty string for nil context, got %s", got)
 	}
