@@ -255,6 +255,8 @@ jobs:
             JWT_PUBLIC_KEY_PATH=${{ secrets.JWT_PUBLIC_KEY_PATH }}
             OTEL_SERVICE_NAME=${{ vars.OTEL_SERVICE_NAME }}
             OTEL_EXPORTER_OTLP_HEADERS=${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+            OTEL_EXPORTER_OTLP_ENDPOINT=${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+            OTEL_RESOURCE_ATTRIBUTES=${{ secrets.OTEL_RESOURCE_ATTRIBUTES }}
             GIN_MODE=release
 
       - name: Display deployment URL
