@@ -255,6 +255,8 @@ jobs:
             JWT_PUBLIC_KEY_PATH=${{ secrets.JWT_PUBLIC_KEY_PATH }}
             OTEL_SERVICE_NAME=${{ vars.OTEL_SERVICE_NAME }}
             OTEL_EXPORTER_OTLP_HEADERS=${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+            OTEL_EXPORTER_OTLP_ENDPOINT=${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+            OTEL_RESOURCE_ATTRIBUTES=${{ secrets.OTEL_RESOURCE_ATTRIBUTES }}
             GIN_MODE=release
 
       - name: Display deployment URL
@@ -273,9 +275,9 @@ jobs:
 
       - name: Smoke test — health check
         run: |
-          SERVICE_URL="${{ steps.deploy.outputs.url }}/api/v1/swagger/index.html"
+          SERVICE_URL="${{ steps.deploy.outputs.url }}"
           echo "Running smoke test against ${SERVICE_URL}..."
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "${SERVICE_URL}/health" || echo "000")
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "${SERVICE_URL}/api/v1/swagger/index.html" || echo "000")
           if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 400 ]; then
             echo "Smoke test passed (HTTP ${HTTP_STATUS})"
           else
