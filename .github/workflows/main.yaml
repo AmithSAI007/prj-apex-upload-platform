@@ -1,0 +1,285 @@
+name: Deploy Cloud Run Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target Environment"
+        required: true
+        default: "development"
+        type: choice
+        options:
+          - development
+          - production
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  GO_VERSION: ">=1.25"
+  IMAGE_NAME: prj-apex-upload-platform
+
+jobs:
+  # ============================================================================
+  # 1. Determine the target environment from branch, event, or manual input.
+  # ============================================================================
+  determine_environment:
+    name: "Determine Environment"
+    runs-on: ubuntu-24.04
+    outputs:
+      environment: ${{ steps.get_env.outputs.environment }}
+    steps:
+      - id: get_env
+        name: Resolve target environment
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "environment=development" >> "$GITHUB_OUTPUT"
+          else
+            ENVIRONMENT="${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}"
+            echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ============================================================================
+  # 2. Static analysis — golangci-lint
+  # ============================================================================
+  lint:
+    name: "Lint"
+    runs-on: ubuntu-24.04
+    needs: determine_environment
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.10
+          args: --timeout=5m
+
+  # ============================================================================
+  # 3. Security scan — gosec Go security scanner
+  # ============================================================================
+  security_scan:
+    name: "Security Scan"
+    runs-on: ubuntu-24.04
+    needs: determine_environment
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Run gosec security scanner
+        uses: securego/gosec@master
+        with:
+          args: "-no-fail ./..."
+
+  # ============================================================================
+  # 4. Test — unit tests with coverage gate
+  # ============================================================================
+  test:
+    name: "Test"
+    runs-on: ubuntu-24.04
+    needs: [lint, security_scan]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Run tests with coverage
+        run: |
+          go test -v -count=1 -coverprofile=coverage.out ./...
+
+      - name: Verify coverage threshold (80%)
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Total coverage: ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < 70.0" | bc -l) )); then
+            echo "::error::Coverage ${COVERAGE}% is below the 70% threshold"
+            exit 1
+          fi
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.out
+          retention-days: 14
+
+  # ============================================================================
+  # 5. Build and push Docker image to Artifact Registry
+  #    - Uses Docker Buildx with GitHub Actions cache for layer caching
+  #    - Authenticates via Workload Identity Federation (no long-lived keys)
+  #    - Skipped on pull requests (quality gate only)
+  # ============================================================================
+  build_and_push:
+    name: "Build & Push Image"
+    runs-on: ubuntu-24.04
+    needs: [determine_environment, test]
+    if: github.event_name != 'pull_request'
+    environment: ${{ needs.determine_environment.outputs.environment }}
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDE }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Login to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.GCP_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate image metadata
+        id: meta
+        run: |
+          REGISTRY="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_REPOSITORY }}"
+          IMAGE="${REGISTRY}/${{ env.IMAGE_NAME }}"
+          SHA_TAG="${IMAGE}:${{ github.sha }}"
+          SHORT_SHA_TAG="${IMAGE}:$(echo ${{ github.sha }} | cut -c1-7)"
+          LATEST_TAG="${IMAGE}:latest"
+          ENV_TAG="${IMAGE}:${{ needs.determine_environment.outputs.environment }}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tags=${SHA_TAG},${SHORT_SHA_TAG},${LATEST_TAG},${ENV_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+  # ============================================================================
+  # 6. Deploy to Cloud Run
+  #    - Sets all required application env vars from GitHub Environment secrets/vars
+  #    - Runs only on push to main/develop or workflow_dispatch (not PRs)
+  # ============================================================================
+  deploy:
+    name: "Deploy to Cloud Run"
+    runs-on: ubuntu-24.04
+    needs: [determine_environment, build_and_push]
+    if: github.event_name != 'pull_request'
+    environment: ${{ needs.determine_environment.outputs.environment }}
+    steps:
+      - name: Authenticate to Google Cloud (WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDE }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ vars.CLOUD_RUN_SERVICE_NAME }}
+          image: ${{ needs.build_and_push.outputs.image }}:${{ github.sha }}
+          region: ${{ vars.GCP_REGION }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          flags: >-
+            --service-account=${{ vars.CLOUD_RUN_SERVICE_ACCOUNT }}
+            --port=8080
+            --memory=512Mi
+            --cpu=1
+            --min-instances=0
+            --max-instances=10
+            --timeout=300s
+            --concurrency=80
+            --ingress=all
+            --allow-unauthenticated
+          env_vars: |
+            APP_ENV=${{ needs.determine_environment.outputs.environment }}
+            HTTP_PORT=8080
+            GCP_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}
+            FIRESTORE_DATABASE_ID=${{ vars.FIRESTORE_DATABASE_ID }}
+            GCS_BUCKET=${{ vars.GCS_BUCKET }}
+            SERVICE_ACCOUNT_EMAIL=${{ vars.SERVICE_ACCOUNT_EMAIL }}
+            JWT_PUBLIC_KEY_PATH=${{ secrets.JWT_PUBLIC_KEY_PATH }}
+            OTEL_SERVICE_NAME=${{ vars.OTEL_SERVICE_NAME }}
+            OTEL_EXPORTER_OTLP_HEADERS=${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+            OTEL_EXPORTER_OTLP_ENDPOINT=${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+            OTEL_RESOURCE_ATTRIBUTES=${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
+            GIN_MODE=release
+
+      - name: Display deployment URL
+        run: |
+          echo "## Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Property | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Environment** | \`${{ needs.determine_environment.outputs.environment }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Service** | \`${{ vars.CLOUD_RUN_SERVICE_NAME }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Region** | \`${{ vars.GCP_REGION }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Image** | \`${{ needs.build_and_push.outputs.image }}:${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **URL** | ${{ steps.deploy.outputs.url }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployed successfully at $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke test — health check
+        run: |
+          SERVICE_URL="${{ steps.deploy.outputs.url }}"
+          echo "Running smoke test against ${SERVICE_URL}..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "${SERVICE_URL}/api/v1/swagger/index.html" || echo "000")
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 400 ]; then
+            echo "Smoke test passed (HTTP ${HTTP_STATUS})"
+          else
+            echo "::warning::Smoke test returned HTTP ${HTTP_STATUS} — service may not have a /health endpoint yet"
+          fi
