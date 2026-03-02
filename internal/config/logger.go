@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -21,6 +22,14 @@ func NewLogger() (*zap.Logger, error) {
 		cfg := zap.NewProductionConfig()
 		cfg.OutputPaths = []string{"stdout", "app.log"}
 		cfg.ErrorOutputPaths = []string{"stderr", "app.log"}
+		cfg.EncoderConfig.LevelKey = "severity"
+		cfg.EncoderConfig.EncodeLevel = func(l zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
+			severity := strings.ToUpper(l.CapitalString())
+			if severity == "WARN" {
+				severity = "WARNING"
+			}
+			enc.AppendString(severity)
+		}
 		logger, err = cfg.Build()
 	} else {
 		// Development: colorized console output with RFC3339 timestamps for readability.
