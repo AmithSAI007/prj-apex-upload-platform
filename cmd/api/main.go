@@ -114,7 +114,6 @@ func main() {
 
 	// Configure the Gin router with middleware stack.
 	router := gin.New()
-	gin.SetMode(gin.ReleaseMode)
 	router.Use(gin.Recovery())                            // Recover from panics and return 500.
 	router.Use(middleware.RequestContext())               // Inject trace/request IDs.
 	router.Use(middleware.ErrorHandler(logger))           // Log unhandled errors.

@@ -16,7 +16,7 @@ func NewLogger() (*zap.Logger, error) {
 	var logger *zap.Logger
 	var err error
 
-	if os.Getenv("APP_ENV") == "production" {
+	if os.Getenv("APP_ENV") != "local" {
 		// Production: structured JSON format, writing to both stdout and app.log.
 		cfg := zap.NewProductionConfig()
 		cfg.OutputPaths = []string{"stdout", "app.log"}
