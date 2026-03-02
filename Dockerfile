@@ -1,7 +1,7 @@
 # Use the official Go image to create a binary.
 # This is based on Debian and sets the GOPATH to /go.
 # https://hub.docker.com/_/golang
-FROM golang:1.25.7-bookworm as builder
+FROM golang:1.25.7-bookworm AS builder
 
 RUN apt-get update
 # Create and change to the app directory.
