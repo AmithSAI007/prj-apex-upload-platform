@@ -13,6 +13,7 @@ import (
 	"github.com/AmithSAI007/prj-apex-upload-platform/api/middleware"
 	internalerrors "github.com/AmithSAI007/prj-apex-upload-platform/internal/errors"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/service"
+	"github.com/AmithSAI007/prj-apex-upload-platform/internal/validation"
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -569,6 +570,8 @@ func TestCancel_InvalidInput(t *testing.T) {
 func setupTestRouter(svc service.UploadInterface) *gin.Engine {
 	logger := zap.NewNop()
 	validate := validator.New()
+	validationCtx := validation.NewValidationContext([]string{}, 0)
+	_ = validationCtx.RegisterValidators(validate)
 	uploadHandler := NewUploadHandler(logger, validate, svc)
 
 	router := gin.New()
@@ -587,6 +590,8 @@ func setupTestRouter(svc service.UploadInterface) *gin.Engine {
 func setupTestRouterWithTracing(svc service.UploadInterface) *gin.Engine {
 	logger := zap.NewNop()
 	validate := validator.New()
+	validationCtx := validation.NewValidationContext([]string{}, 0)
+	_ = validationCtx.RegisterValidators(validate)
 	uploadHandler := NewUploadHandler(logger, validate, svc)
 
 	tp := sdktrace.NewTracerProvider()

@@ -15,8 +15,9 @@ import (
 // HandlerRegistry holds the handler and middleware instances needed for route
 // registration. It acts as the dependency injection point for the HTTP layer.
 type HandlerRegistry struct {
-	Upload *handler.UploadHandler
-	Auth   *middleware.AuthMiddleware
+	Upload           *handler.UploadHandler
+	Auth             *middleware.AuthMiddleware
+	PerClientLimiter *middleware.PerClientRateLimiter
 }
 
 // SetupRoutes registers all API endpoints on the given Gin router.
@@ -27,9 +28,15 @@ type HandlerRegistry struct {
 func SetupRoutes(router *gin.Engine, handlers *HandlerRegistry) {
 	v1 := router.Group("/api/v1")
 
-	// Upload session endpoints: all require authenticated JWT bearer token.
+	v1.GET("/healthz", func(ctx *gin.Context) {
+		ctx.JSON(200, gin.H{"status": "ok"})
+	})
+
+	// Upload session endpoints: all require authenticated JWT bearer token
+	// and per-client rate limiting keyed by user_id.
 	uploadGroup := v1.Group("/uploads")
 	uploadGroup.Use(handlers.Auth.Authenticate())
+	uploadGroup.Use(handlers.PerClientLimiter.Middleware())
 	{
 		uploadGroup.POST("", handlers.Upload.Create)
 		uploadGroup.POST("/:uploadId/resume", handlers.Upload.Resume)

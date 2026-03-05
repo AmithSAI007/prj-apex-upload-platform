@@ -16,3 +16,8 @@ var ErrNotFound = errors.New("not found")
 // ErrSessionExpired indicates that the upload session has exceeded its TTL
 // and is no longer usable. Handlers map this to HTTP 410 Gone.
 var ErrSessionExpired = errors.New("session expired")
+
+// ErrCircuitOpen indicates that the circuit breaker is open and requests are
+// being rejected to protect the downstream dependency. Handlers map this to
+// HTTP 503 Service Unavailable.
+var ErrCircuitOpen = errors.New("circuit breaker is open")

@@ -137,6 +137,7 @@ func (m *AuthMiddleware) Authenticate() gin.HandlerFunc {
 			attribute.String("user_id", claims.UserID),
 		))
 		c := context.WithValue(ctx.Request.Context(), constants.CtxUserIDKey, claims.UserID)
+		c = context.WithValue(c, constants.CtxTraceIDKey, traceID)
 		ctx.Request = ctx.Request.WithContext(c)
 		ctx.Next()
 	}

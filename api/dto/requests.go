@@ -14,11 +14,11 @@ type ChecksumRequest struct {
 // the file to be uploaded and optional metadata for the upload session.
 type CreateUploadRequest struct {
 	// FileName is the original name of the file being uploaded (required).
-	FileName string `json:"fileName" validate:"required" example:"invoice.pdf"`
+	FileName string `json:"fileName" validate:"required,safefilename" example:"invoice.pdf"`
 	// ContentType is the MIME type of the file (required).
-	ContentType string `json:"contentType" validate:"required" example:"application/pdf"`
+	ContentType string `json:"contentType" validate:"required,contenttype" example:"application/pdf"`
 	// SizeBytes is the total file size in bytes; must be greater than zero.
-	SizeBytes int64 `json:"sizeBytes" validate:"required,gt=0" example:"10485760"`
+	SizeBytes int64 `json:"sizeBytes" validate:"required,gt=0,maxfilesize" example:"10485760"`
 	// Checksum is an optional client-supplied checksum for data integrity.
 	Checksum *ChecksumRequest `json:"checksum" validate:"omitempty"`
 	// Metadata is an optional set of arbitrary key-value pairs attached to the upload.

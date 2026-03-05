@@ -6,8 +6,11 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"github.com/AmithSAI007/prj-apex-upload-platform/internal/config"
 	internalerrors "github.com/AmithSAI007/prj-apex-upload-platform/internal/errors"
 	"github.com/AmithSAI007/prj-apex-upload-platform/internal/model"
+	"github.com/AmithSAI007/prj-apex-upload-platform/internal/resilience"
+	"github.com/cenkalti/backoff/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
@@ -26,15 +29,30 @@ type FirestoreUploadSessionStore struct {
 	client *firestore.Client
 	tracer trace.Tracer
 	logger *zap.Logger
+	cfg    *config.Config
 }
 
 // NewFirestoreUploadSessionStore creates a Firestore-backed session store.
-func NewFirestoreUploadSessionStore(client *firestore.Client, logger *zap.Logger, tracer trace.Tracer) *FirestoreUploadSessionStore {
+func NewFirestoreUploadSessionStore(client *firestore.Client, logger *zap.Logger, tracer trace.Tracer, cfg *config.Config) *FirestoreUploadSessionStore {
 	return &FirestoreUploadSessionStore{
 		client: client,
 		tracer: tracer,
 		logger: logger,
+		cfg:    cfg,
 	}
+}
+
+// classifyError wraps non-retryable gRPC errors with backoff.Permanent so the
+// retry loop stops immediately for permanent failures (e.g., NotFound,
+// AlreadyExists, PermissionDenied).
+func classifyError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if !resilience.IsRetryable(err) {
+		return backoff.Permanent(err)
+	}
+	return err
 }
 
 // Create persists a new upload session document in Firestore. The document ID
@@ -59,7 +77,22 @@ func (s *FirestoreUploadSessionStore) Create(ctx context.Context, session *model
 		attribute.String("collection", uploadSessionsCollection),
 	))
 
-	_, err := s.client.Collection(uploadSessionsCollection).Doc(session.UploadID).Create(ctx, session)
+	operation := func() (string, error) {
+		_, err := s.client.Collection(uploadSessionsCollection).Doc(session.UploadID).Create(ctx, session)
+		if err != nil {
+			return "", classifyError(err)
+		}
+
+		return session.UploadID, nil
+	}
+
+	result, err := backoff.Retry(
+		ctx, operation,
+		backoff.WithBackOff(backoff.NewExponentialBackOff()),
+		backoff.WithMaxElapsedTime(time.Duration(s.cfg.MaxElapsedTimeSeconds)*time.Second),
+		backoff.WithMaxTries(uint(s.cfg.MaxRetryAttempts)),
+	)
+
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(otCodes.Error, "Failed to create upload session in Firestore")
@@ -70,7 +103,7 @@ func (s *FirestoreUploadSessionStore) Create(ctx context.Context, session *model
 	}
 
 	span.AddEvent("firestore.create.success", trace.WithAttributes(
-		attribute.String("doc.id", session.UploadID),
+		attribute.String("doc.id", result),
 	))
 	span.SetStatus(otCodes.Ok, "Upload session created successfully")
 	return err
@@ -87,7 +120,20 @@ func (s *FirestoreUploadSessionStore) GetByID(ctx context.Context, uploadID stri
 	)
 	defer span.End()
 
-	snap, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Get(ctx)
+	operation := func() (*firestore.DocumentSnapshot, error) {
+		snap, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Get(ctx)
+		if err != nil {
+			return nil, classifyError(err)
+		}
+		return snap, nil
+	}
+
+	result, err := backoff.Retry(ctx, operation,
+		backoff.WithBackOff(backoff.NewExponentialBackOff()),
+		backoff.WithMaxElapsedTime(time.Duration(s.cfg.MaxElapsedTimeSeconds)*time.Second),
+		backoff.WithMaxTries(uint(s.cfg.MaxRetryAttempts)),
+	)
+
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			span.RecordError(err)
@@ -100,7 +146,7 @@ func (s *FirestoreUploadSessionStore) GetByID(ctx context.Context, uploadID stri
 	}
 
 	var session model.UploadSession
-	if err := snap.DataTo(&session); err != nil {
+	if err := result.DataTo(&session); err != nil {
 		span.RecordError(err)
 		span.SetStatus(otCodes.Error, "failed to parse document")
 		return nil, err
@@ -132,27 +178,48 @@ func (s *FirestoreUploadSessionStore) GetByIdempotencyKey(ctx context.Context, t
 		attribute.String("collection", uploadSessionsCollection),
 	))
 
-	query := s.client.Collection(uploadSessionsCollection).
-		Where("tenantId", "==", tenantID).
-		Where("userId", "==", userID).
-		Where("idempotencyKey", "==", idempotencyKey).
-		Limit(1)
-
-	iter := query.Documents(idCtx)
-	defer iter.Stop()
-
-	if err := idCtx.Err(); err != nil {
-		s.logger.Error("Context error before Firestore query", zap.Error(err))
+	// The entire query + iteration is inside the retry function so the
+	// iterator is fully consumed before the function returns. Previously
+	// the iterator was returned and deferred Stop() closed it before the
+	// caller could call Next().
+	type queryResult struct {
+		session *model.UploadSession
+		found   bool
 	}
 
-	snap, err := iter.Next()
-	if err == iterator.Done {
-		idSpan.AddEvent("firestore.query.no_result", trace.WithAttributes(
-			attribute.String("collection", uploadSessionsCollection),
-		))
-		idSpan.SetStatus(otCodes.Ok, "No upload session found for idempotency key")
-		return nil, nil
+	operation := func() (queryResult, error) {
+		query := s.client.Collection(uploadSessionsCollection).
+			Where("tenantId", "==", tenantID).
+			Where("userId", "==", userID).
+			Where("idempotencyKey", "==", idempotencyKey).
+			Limit(1)
+
+		iter := query.Documents(idCtx)
+		defer iter.Stop()
+
+		snap, err := iter.Next()
+		if err == iterator.Done {
+			return queryResult{found: false}, nil
+		}
+		if err != nil {
+			return queryResult{}, classifyError(err)
+		}
+
+		var session model.UploadSession
+		if err := snap.DataTo(&session); err != nil {
+			// DataTo failures are permanent (bad schema).
+			return queryResult{}, backoff.Permanent(err)
+		}
+
+		return queryResult{session: &session, found: true}, nil
 	}
+
+	result, err := backoff.Retry(idCtx, operation,
+		backoff.WithBackOff(backoff.NewExponentialBackOff()),
+		backoff.WithMaxElapsedTime(time.Duration(s.cfg.MaxElapsedTimeSeconds)*time.Second),
+		backoff.WithMaxTries(uint(s.cfg.MaxRetryAttempts)),
+	)
+
 	if err != nil {
 		idSpan.RecordError(err)
 		idSpan.SetStatus(otCodes.Error, "Firestore query failed")
@@ -162,19 +229,19 @@ func (s *FirestoreUploadSessionStore) GetByIdempotencyKey(ctx context.Context, t
 		return nil, err
 	}
 
-	idSpan.AddEvent("firestore.query.success", trace.WithAttributes(
-		attribute.String("doc.id", snap.Ref.ID),
-	))
-
-	var session model.UploadSession
-	if err := snap.DataTo(&session); err != nil {
-		idSpan.RecordError(err)
-		idSpan.SetStatus(otCodes.Error, "Failed to parse Firestore document")
-		return nil, err
+	if !result.found {
+		idSpan.AddEvent("firestore.query.no_result", trace.WithAttributes(
+			attribute.String("collection", uploadSessionsCollection),
+		))
+		idSpan.SetStatus(otCodes.Ok, "No upload session found for idempotency key")
+		return nil, nil
 	}
 
+	idSpan.AddEvent("firestore.query.success", trace.WithAttributes(
+		attribute.String("doc.id", result.session.UploadID),
+	))
 	idSpan.SetStatus(otCodes.Ok, "Upload session found")
-	return &session, nil
+	return result.session, nil
 }
 
 // UpdateStatus patches the session's status and uploaded byte count. Also
@@ -188,11 +255,23 @@ func (s *FirestoreUploadSessionStore) UpdateStatus(ctx context.Context, uploadID
 	)
 	defer span.End()
 
-	_, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Update(ctx, []firestore.Update{
-		{Path: "status", Value: status},
-		{Path: "uploadedBytes", Value: uploadedBytes},
-		{Path: "updatedAt", Value: time.Now().UTC()},
-	})
+	operation := func() (bool, error) {
+		_, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Update(ctx, []firestore.Update{
+			{Path: "status", Value: status},
+			{Path: "uploadedBytes", Value: uploadedBytes},
+			{Path: "updatedAt", Value: time.Now().UTC()},
+		})
+		if err != nil {
+			return false, classifyError(err)
+		}
+		return true, nil
+	}
+
+	_, err := backoff.Retry(ctx, operation,
+		backoff.WithBackOff(backoff.NewExponentialBackOff()),
+		backoff.WithMaxElapsedTime(time.Duration(s.cfg.MaxElapsedTimeSeconds)*time.Second),
+		backoff.WithMaxTries(uint(s.cfg.MaxRetryAttempts)),
+	)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(otCodes.Error, "failed to update upload status")
@@ -212,10 +291,23 @@ func (s *FirestoreUploadSessionStore) UpdateGCSUploadURL(ctx context.Context, up
 	)
 	defer span.End()
 
-	_, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Update(ctx, []firestore.Update{
-		{Path: "gcsUploadUrl", Value: gcsUploadURL},
-		{Path: "updatedAt", Value: time.Now().UTC()},
-	})
+	operation := func() (bool, error) {
+		_, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Update(ctx, []firestore.Update{
+			{Path: "gcsUploadUrl", Value: gcsUploadURL},
+			{Path: "updatedAt", Value: time.Now().UTC()},
+		})
+
+		if err != nil {
+			return false, classifyError(err)
+		}
+		return true, nil
+	}
+
+	_, err := backoff.Retry(ctx, operation,
+		backoff.WithBackOff(backoff.NewExponentialBackOff()),
+		backoff.WithMaxElapsedTime(time.Duration(s.cfg.MaxElapsedTimeSeconds)*time.Second),
+		backoff.WithMaxTries(uint(s.cfg.MaxRetryAttempts)),
+	)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(otCodes.Error, "failed to update gcs upload url")
@@ -236,11 +328,23 @@ func (s *FirestoreUploadSessionStore) MarkCompleted(ctx context.Context, uploadI
 	)
 	defer span.End()
 
-	_, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Update(ctx, []firestore.Update{
-		{Path: "status", Value: model.StatusCompleted},
-		{Path: "uploadedBytes", Value: uploadedBytes},
-		{Path: "updatedAt", Value: time.Now().UTC()},
-	})
+	operation := func() (bool, error) {
+		_, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Update(ctx, []firestore.Update{
+			{Path: "status", Value: model.StatusCompleted},
+			{Path: "uploadedBytes", Value: uploadedBytes},
+			{Path: "updatedAt", Value: time.Now().UTC()},
+		})
+		if err != nil {
+			return false, classifyError(err)
+		}
+		return true, nil
+	}
+
+	_, err := backoff.Retry(ctx, operation,
+		backoff.WithBackOff(backoff.NewExponentialBackOff()),
+		backoff.WithMaxElapsedTime(time.Duration(s.cfg.MaxElapsedTimeSeconds)*time.Second),
+		backoff.WithMaxTries(uint(s.cfg.MaxRetryAttempts)),
+	)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(otCodes.Error, "failed to mark completed")
@@ -260,10 +364,23 @@ func (s *FirestoreUploadSessionStore) MarkCancelled(ctx context.Context, uploadI
 	)
 	defer span.End()
 
-	_, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Update(ctx, []firestore.Update{
-		{Path: "status", Value: model.StatusCancelled},
-		{Path: "updatedAt", Value: time.Now().UTC()},
-	})
+	operation := func() (bool, error) {
+		_, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Update(ctx, []firestore.Update{
+			{Path: "status", Value: model.StatusCancelled},
+			{Path: "updatedAt", Value: time.Now().UTC()},
+		})
+
+		if err != nil {
+			return false, classifyError(err)
+		}
+		return true, nil
+	}
+
+	_, err := backoff.Retry(ctx, operation,
+		backoff.WithBackOff(backoff.NewExponentialBackOff()),
+		backoff.WithMaxElapsedTime(time.Duration(s.cfg.MaxElapsedTimeSeconds)*time.Second),
+		backoff.WithMaxTries(uint(s.cfg.MaxRetryAttempts)),
+	)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(otCodes.Error, "failed to mark cancelled")
@@ -283,10 +400,23 @@ func (s *FirestoreUploadSessionStore) MarkExpired(ctx context.Context, uploadID 
 	)
 	defer span.End()
 
-	_, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Update(ctx, []firestore.Update{
-		{Path: "status", Value: model.StatusExpired},
-		{Path: "updatedAt", Value: time.Now().UTC()},
-	})
+	operation := func() (bool, error) {
+		_, err := s.client.Collection(uploadSessionsCollection).Doc(uploadID).Update(ctx, []firestore.Update{
+			{Path: "status", Value: model.StatusExpired},
+			{Path: "updatedAt", Value: time.Now().UTC()},
+		})
+		if err != nil {
+			return false, classifyError(err)
+		}
+		return true, nil
+	}
+
+	_, err := backoff.Retry(ctx, operation,
+		backoff.WithBackOff(backoff.NewExponentialBackOff()),
+		backoff.WithMaxElapsedTime(time.Duration(s.cfg.MaxElapsedTimeSeconds)*time.Second),
+		backoff.WithMaxTries(uint(s.cfg.MaxRetryAttempts)),
+	)
+
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(otCodes.Error, "failed to mark expired")

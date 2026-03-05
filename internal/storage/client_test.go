@@ -6,9 +6,18 @@ import (
 	"testing"
 
 	"cloud.google.com/go/storage"
+	"github.com/AmithSAI007/prj-apex-upload-platform/internal/config"
 	"go.opentelemetry.io/otel"
 	"google.golang.org/api/option"
 )
+
+// testCfg returns a minimal config suitable for unit tests.
+func testCfg() *config.Config {
+	return &config.Config{
+		MaxRetryAttempts:      3,
+		MaxElapsedTimeSeconds: 5,
+	}
+}
 
 func TestSignedURLClientInterface(t *testing.T) {
 	var _ SignedURLClient = (*GCSClient)(nil)
@@ -26,7 +35,7 @@ func TestGCSClient_Close_NilReceiver(t *testing.T) {
 // TestGCSClient_Close_NilInnerClient verifies that Close returns nil when the
 // inner storage client is nil (e.g., partially initialized struct).
 func TestGCSClient_Close_NilInnerClient(t *testing.T) {
-	c := &GCSClient{client: nil, trace: otel.Tracer("test")}
+	c := &GCSClient{client: nil, trace: otel.Tracer("test"), cfg: testCfg()}
 	if err := c.Close(); err != nil {
 		t.Fatalf("expected nil error for nil inner client, got %v", err)
 	}
@@ -36,7 +45,7 @@ func TestGCSClient_Close_NilInnerClient(t *testing.T) {
 // underlying storage.Client (nil in this case since we cannot construct one
 // without real GCP).
 func TestGCSClient_Client_Getter(t *testing.T) {
-	c := &GCSClient{client: nil, trace: otel.Tracer("test")}
+	c := &GCSClient{client: nil, trace: otel.Tracer("test"), cfg: testCfg()}
 	if c.Client() != nil {
 		t.Fatal("expected nil inner client")
 	}
@@ -45,7 +54,7 @@ func TestGCSClient_Client_Getter(t *testing.T) {
 // TestSignResumableUploadURL_EmptyBucket verifies that validation rejects an
 // empty bucket parameter.
 func TestSignResumableUploadURL_EmptyBucket(t *testing.T) {
-	c := &GCSClient{client: nil, trace: otel.Tracer("test")}
+	c := &GCSClient{client: nil, trace: otel.Tracer("test"), cfg: testCfg()}
 	_, err := c.SignResumableUploadURL(context.Background(), "", "object", "sa@test")
 	if err == nil {
 		t.Fatal("expected error for empty bucket")
@@ -55,7 +64,7 @@ func TestSignResumableUploadURL_EmptyBucket(t *testing.T) {
 // TestSignResumableUploadURL_EmptyObjectName verifies that validation rejects
 // an empty objectName parameter.
 func TestSignResumableUploadURL_EmptyObjectName(t *testing.T) {
-	c := &GCSClient{client: nil, trace: otel.Tracer("test")}
+	c := &GCSClient{client: nil, trace: otel.Tracer("test"), cfg: testCfg()}
 	_, err := c.SignResumableUploadURL(context.Background(), "bucket", "", "sa@test")
 	if err == nil {
 		t.Fatal("expected error for empty object name")
@@ -65,7 +74,7 @@ func TestSignResumableUploadURL_EmptyObjectName(t *testing.T) {
 // TestSignResumableUploadURL_EmptyServiceAccount verifies that validation
 // rejects an empty serviceAccount parameter.
 func TestSignResumableUploadURL_EmptyServiceAccount(t *testing.T) {
-	c := &GCSClient{client: nil, trace: otel.Tracer("test")}
+	c := &GCSClient{client: nil, trace: otel.Tracer("test"), cfg: testCfg()}
 	_, err := c.SignResumableUploadURL(context.Background(), "bucket", "object", "")
 	if err == nil {
 		t.Fatal("expected error for empty service account")
@@ -75,7 +84,7 @@ func TestSignResumableUploadURL_EmptyServiceAccount(t *testing.T) {
 // TestSignResumableUploadURL_AllEmpty verifies that validation rejects when
 // all three required parameters are empty.
 func TestSignResumableUploadURL_AllEmpty(t *testing.T) {
-	c := &GCSClient{client: nil, trace: otel.Tracer("test")}
+	c := &GCSClient{client: nil, trace: otel.Tracer("test"), cfg: testCfg()}
 	_, err := c.SignResumableUploadURL(context.Background(), "", "", "")
 	if err == nil {
 		t.Fatal("expected error for all empty params")
@@ -94,7 +103,7 @@ func TestSignResumableUploadURL_SigningFailure(t *testing.T) {
 		_ = client.Close()
 	}()
 
-	c := &GCSClient{client: client, trace: otel.Tracer("test")}
+	c := &GCSClient{client: client, trace: otel.Tracer("test"), cfg: testCfg()}
 	_, err = c.SignResumableUploadURL(ctx, "my-bucket", "my-object", "sa@example.com")
 	if err == nil {
 		t.Fatal("expected signing error with unauthenticated client")
@@ -112,7 +121,7 @@ func TestGCSClient_Close_RealClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create unauthenticated GCS client: %v", err)
 	}
-	c := &GCSClient{client: client, trace: otel.Tracer("test")}
+	c := &GCSClient{client: client, trace: otel.Tracer("test"), cfg: testCfg()}
 	if err := c.Close(); err != nil {
 		t.Fatalf("expected no error closing real client, got %v", err)
 	}
@@ -129,7 +138,7 @@ func TestGCSClient_Client_RealClient(t *testing.T) {
 	defer func() {
 		_ = client.Close()
 	}()
-	c := &GCSClient{client: client, trace: otel.Tracer("test")}
+	c := &GCSClient{client: client, trace: otel.Tracer("test"), cfg: testCfg()}
 	if c.Client() == nil {
 		t.Fatal("expected non-nil inner client")
 	}
